@@ -1,1 +1,0 @@
-/home/rcabrera/Documents/source/python/PyWignerCUDA/pywignercuda_path.py
