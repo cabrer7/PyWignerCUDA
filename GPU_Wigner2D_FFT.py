@@ -684,8 +684,6 @@ class Propagator_Base :
 
 	def SetFFT_Plans(self):
 		self.plan_Z2Z_2D = cuda_fft.Plan_Z2Z( (self.P_gridDIM, self.X_gridDIM)   ,  batch=1 )
-		#self.plan_Z2Z_1D_Axes0 = cuda_fft.Plan_Z2Z_Axes0( (self.P_gridDIM,) ,  batch = self.X_gridDIM )
-		#self.plan_Z2Z_1D_Axes1 = cuda_fft.Plan_Z2Z(       (self.X_gridDIM,) ,  batch = self.P_gridDIM ) 
 
 		self.plan_Z2Z_2D_Axes0 = cuda_fft.Plan_Z2Z_2D_Axis0(  (self.P_gridDIM,self.X_gridDIM)  )
 		self.plan_Z2Z_2D_Axes1 = cuda_fft.Plan_Z2Z_2D_Axis1(  (self.P_gridDIM,self.X_gridDIM)  ) 
@@ -833,6 +831,23 @@ class Propagator_Base :
 
 		return timeRange , out
 
+	def Ehrenfest_Hamiltonian_FromFile(self, fileName=None):
+
+		if fileName==None:
+			FILE = h5py.File(self.fileName)
+		else :
+			FILE = h5py.File(fileName)
+	
+		out         = FILE['/Ehrenfest/Hamiltonian_average'][...]
+		dt          = FILE['/dt'][...] 				
+		timeSteps   = FILE['/timeSteps'][...] 	
+
+		timeRange = np.array( range(0, timeSteps+1) )*dt
+
+		FILE.close() 
+
+		return timeRange , out
+
 
 	def WignerMarginal_Probability_x(self,W):
 		return np.sum( W , axis=0 )*self.dP  
@@ -896,7 +911,7 @@ class Propagator_Base :
 	    matplotlib.rcParams.update({'font.size': 18})
 	    return fig
 
-	def ThetaP(self, LW_GPU, W_GPU):
+	def Product_ThetaP(self, LW_GPU, W_GPU):
 		"""
 		Caldeira Legget dissipator
 		"""
@@ -916,20 +931,9 @@ class Propagator_Base :
 		self.ThetaP( LW_temp_GPU , LW_GPU )
 		W_GPU  +=  2. * 1j * self.dt *self.gammaDamping * LW_temp_GPU
 
-	def _CaldeiraDissipatorOrder3(self, LW_GPU, LW_temp_GPU, W_GPU ):
-		LW_GPU  *= 0j
-		LW_GPU  +=   W_GPU
-		self.ThetaP( LW_temp_GPU , W_GPU )
-		LW_GPU  += 2./3. * 1j * self.dt *self.gammaDamping * LW_temp_GPU			
-		
-		self.ThetaP( LW_temp_GPU , LW_GPU )
-		LW_GPU  +=  2./2. * 1j * self.dt *self.gammaDamping * LW_temp_GPU
-
-		self.ThetaP( LW_temp_GPU , LW_GPU )
-		W_GPU  +=  2. * 1j * self.dt *self.gammaDamping * LW_temp_GPU
-
 
 	def CaldeiraDissipatorOrder3(self, LW_GPU, LW_temp_GPU, W_GPU, dampingFunction):
+		# dampingFunction is a function of momentum
 		LW_GPU  *= 0j
 		LW_GPU  +=   W_GPU
 
@@ -977,6 +981,194 @@ class Propagator_Base :
 		dX:      discretization step in X
 		"""	
 		return np.diag( self.X_range  ).astype(np.complex128)
+
+
+	#
+
+	def f_Damping(self,p,epsilon):
+		return p**2/np.sqrt( p**2 + epsilon**2 )
+
+	def g_ODM(self,p,epsilon):
+		return np.sqrt( self.L_material*self.f_Damping( np.abs(p) + self.hBar/(2.*self.L_material) ,epsilon)  )	
+
+	def g_sign_ODM(self,p,epsilon):
+		return self.g_ODM(p,epsilon)*np.sign(p)	
+
+	def SetA_ODM(self,epsilon):
+		cos_plus  = np.cos( self.X + 0.5*self.hBar*self.Theta )
+		cos_minus = np.cos( self.X - 0.5*self.hBar*self.Theta )
+		sin_plus  = np.sin( self.X + 0.5*self.hBar*self.Theta )
+		sin_minus = np.sin( self.X - 0.5*self.hBar*self.Theta )
+
+		g_ODM_plus  = self.g_ODM( self.P + 0.5*self.hBar*self.Lambda , epsilon)
+		g_ODM_minus = self.g_ODM( self.P - 0.5*self.hBar*self.Lambda , epsilon)
+
+		g_sign_ODM_plus  = self.g_sign_ODM( self.P + 0.5*self.hBar*self.Lambda ,epsilon)
+		g_sign_ODM_minus = self.g_sign_ODM( self.P - 0.5*self.hBar*self.Lambda ,epsilon)
+			
+		
+		self.cos_plus_GPU  = gpuarray.to_gpu( np.ascontiguousarray( cos_plus  , dtype= np.complex128) )
+		self.cos_minus_GPU = gpuarray.to_gpu( np.ascontiguousarray( cos_minus , dtype= np.complex128) )
+		self.cos_plus_minus_GPU = gpuarray.to_gpu( np.ascontiguousarray( cos_plus*cos_minus, dtype= np.complex128) )
+
+		self.sin_plus_GPU  = gpuarray.to_gpu( np.ascontiguousarray( sin_plus  , dtype= np.complex128) )
+		self.sin_minus_GPU = gpuarray.to_gpu( np.ascontiguousarray( sin_minus , dtype= np.complex128) )
+		self.sin_plus_minus_GPU = gpuarray.to_gpu( np.ascontiguousarray( sin_plus*sin_minus, dtype= np.complex128) )
+
+		self.g_ODM_plus_GPU  = gpuarray.to_gpu( np.ascontiguousarray( g_ODM_plus  , dtype= np.complex128) )
+		self.g_ODM_minus_GPU = gpuarray.to_gpu( np.ascontiguousarray( g_ODM_minus , dtype= np.complex128) )
+
+		self.gg_ODM_plus_GPU   = gpuarray.to_gpu( np.ascontiguousarray( -0.5*g_ODM_plus**2,  dtype= np.complex128) )
+		self.gg_ODM_minus_GPU  = gpuarray.to_gpu( np.ascontiguousarray( -0.5*g_ODM_minus**2, dtype= np.complex128) )
+
+		self.g_sign_ODM_plus_GPU  = gpuarray.to_gpu( np.ascontiguousarray( g_sign_ODM_plus  , dtype= np.complex128) )
+		self.g_sign_ODM_minus_GPU = gpuarray.to_gpu( np.ascontiguousarray( g_sign_ODM_minus , dtype= np.complex128) )
+
+
+
+	def Lindbladian_ODM(self, LW_GPU, LW_temp_GPU, n , W_GPU):
+		
+		LW_GPU  *= 0j
+
+		# ---------------------------------
+		LW_temp_GPU  *= 0j
+		LW_temp_GPU  +=  W_GPU
+
+		# p x  ->  p lambda 
+		self.Fourier_X_to_Lambda_GPU( LW_temp_GPU )
+
+		LW_temp_GPU *= self.g_ODM_plus_GPU
+		LW_temp_GPU *= self.g_ODM_minus_GPU
+
+		# p lambda -> theta x 
+		self.Fourier_Lambda_to_X_GPU(LW_temp_GPU )	
+		self.Fourier_P_to_Theta_GPU( LW_temp_GPU )	
+
+		LW_temp_GPU *= self.cos_plus_minus_GPU
+
+		LW_GPU += LW_temp_GPU	# theta x
+
+		# ---------------------------------
+		LW_temp_GPU  *= 0j
+		LW_temp_GPU  +=  W_GPU
+
+		self.Fourier_X_to_Lambda_GPU( LW_temp_GPU )
+		
+		LW_temp_GPU *= self.g_ODM_plus_GPU
+		LW_temp_GPU *= self.g_sign_ODM_minus_GPU		
+
+		# p lambda -> theta x 
+		self.Fourier_Lambda_to_X_GPU(LW_temp_GPU )	
+		self.Fourier_P_to_Theta_GPU( LW_temp_GPU )
+
+		LW_temp_GPU *= self.cos_minus_GPU
+		LW_temp_GPU *= self.sin_plus_GPU
+		LW_temp_GPU *= 1j
+
+		LW_GPU += LW_temp_GPU
+
+		# ---------------------------------
+		LW_temp_GPU  *= 0j
+		LW_temp_GPU  +=  W_GPU
+
+		# p x  ->  p lambda 
+		self.Fourier_X_to_Lambda_GPU( LW_temp_GPU )
+		
+		LW_temp_GPU *= self.g_sign_ODM_plus_GPU
+		LW_temp_GPU *= self.g_ODM_minus_GPU	
+
+		# p lambda -> theta x 
+		self.Fourier_Lambda_to_X_GPU(LW_temp_GPU )	
+		self.Fourier_P_to_Theta_GPU( LW_temp_GPU )
+
+		LW_temp_GPU *= self.sin_minus_GPU
+		LW_temp_GPU *= self.cos_plus_GPU
+		LW_temp_GPU *= -1j
+
+		LW_GPU += LW_temp_GPU
+
+		# ---------------------------------
+		LW_temp_GPU  *= 0j
+		LW_temp_GPU  +=  W_GPU
+
+		# p x  ->  p lambda 
+		self.Fourier_X_to_Lambda_GPU( LW_temp_GPU )
+		
+		LW_temp_GPU *= self.g_sign_ODM_plus_GPU
+		LW_temp_GPU *= self.g_sign_ODM_minus_GPU
+
+		# p lambda -> theta x 
+		self.Fourier_Lambda_to_X_GPU(LW_temp_GPU )	
+		self.Fourier_P_to_Theta_GPU( LW_temp_GPU )
+
+		LW_temp_GPU *= self.sin_plus_minus_GPU
+
+		LW_GPU += LW_temp_GPU
+		
+		# ---------------------------------
+		LW_temp_GPU  *= 0j
+		LW_temp_GPU  +=  W_GPU
+
+		# p x  ->  p lambda 
+		self.Fourier_X_to_Lambda_GPU( LW_temp_GPU )
+
+		LW_temp_GPU *= self.gg_ODM_plus_GPU
+		
+		# p lambda -> theta x 
+		self.Fourier_Lambda_to_X_GPU(LW_temp_GPU )	
+		self.Fourier_P_to_Theta_GPU( LW_temp_GPU )
+
+		LW_GPU += LW_temp_GPU
+
+		# ---------------------------------
+		LW_temp_GPU  *= 0j
+		LW_temp_GPU  +=  W_GPU
+
+		# p x  ->  p lambda 
+		self.Fourier_X_to_Lambda_GPU( LW_temp_GPU )
+
+		LW_temp_GPU *= self.gg_ODM_minus_GPU
+		
+		# p lambda -> theta x 
+		self.Fourier_Lambda_to_X_GPU(LW_temp_GPU )	
+		self.Fourier_P_to_Theta_GPU( LW_temp_GPU )
+
+		LW_GPU += LW_temp_GPU
+
+		#
+
+		self.Fourier_Theta_to_P_GPU( LW_GPU )
+
+		LW_GPU *= self.dt*2*self.gammaDamping/n
+		
+
+	def Lindbladian_ODM_Order1 (self, W2_GPU, LW_temp_GPU, LW_temp2_GPU, W_GPU):
+
+		self.Lindbladian_ODM( LW_temp_GPU , LW_temp2_GPU , 1. , W_GPU)
+
+		W_GPU += LW_temp_GPU
+
+	def Lindbladian_ODM_Order2 (self, W2_GPU, LW_temp_GPU, LW_temp2_GPU, W_GPU):
+
+		self.Lindbladian_ODM( LW_temp_GPU , LW_temp2_GPU , 2. , W_GPU)
+		W2_GPU = W_GPU + LW_temp_GPU
+
+		self.Lindbladian_ODM( LW_temp_GPU , LW_temp2_GPU , 1. , W2_GPU)
+
+		W_GPU += LW_temp_GPU
+				
+
+	def Lindbladian_ODM_Order3 (self, W2_GPU, LW_temp_GPU, LW_temp2_GPU, W_GPU):
+
+		self.Lindbladian_ODM( LW_temp_GPU , LW_temp2_GPU , 3. , W_GPU)
+		W2_GPU = W_GPU + LW_temp_GPU
+
+		self.Lindbladian_ODM( LW_temp_GPU , LW_temp2_GPU , 2. , W2_GPU)
+		W2_GPU = W_GPU + LW_temp_GPU
+
+		self.Lindbladian_ODM( LW_temp_GPU , LW_temp2_GPU , 1. , W2_GPU)
+
+		W_GPU += LW_temp_GPU
 
 #=====================================================================================================
 #
@@ -1050,8 +1242,10 @@ class GPU_Wigner2D_FFT(Propagator_Base):
 		W_GPU = gpuarray.to_gpu( np.ascontiguousarray( self.W_init , dtype = np.complex128) )	
 		norm = gpuarray.sum( W_GPU  ).get()*self.dX*self.dP
 		W_GPU /= norm
-		
 
+		if dampingFunction == 'ODM':
+			self.SetA_ODM(self.epsilon)
+		
 		dPotentialdX = self.dPotential(0. , self.X) + 0.*self.P 
 		self.dPotentialdX_GPU = gpuarray.to_gpu( np.ascontiguousarray( dPotentialdX.astype(np.complex128) )  )
 
@@ -1063,6 +1257,7 @@ class GPU_Wigner2D_FFT(Propagator_Base):
 
 		LW_GPU      = gpuarray.to_gpu( np.ascontiguousarray( self.W_init , dtype = np.complex128) )
 		LW_temp_GPU = gpuarray.to_gpu( np.ascontiguousarray( self.W_init , dtype = np.complex128) )
+		LW_temp2_GPU = gpuarray.to_gpu( np.ascontiguousarray( self.W_init , dtype = np.complex128) )
 
 		# Filter to calculate tunneling time
 		Filter=np.array(self.P**2/2. + self.Potential(0,self.X + 0.*self.P )>-0.1,dtype=np.complex128)
@@ -1145,10 +1340,19 @@ class GPU_Wigner2D_FFT(Propagator_Base):
 			self.Fourier_Theta_to_P_GPU( W_GPU )	
 			
 			if self.gammaDamping != 0:
-				if dampingFunction == 'CaldeiraLeggett':
-					self.CaldeiraDissipatorOrder3( LW_GPU, LW_temp_GPU, W_GPU, self.ThetaP )
-				else :
-					self.CaldeiraDissipatorOrder3( LW_GPU, LW_temp_GPU, W_GPU, dampingFunction ) 
+
+				#if dampingFunction == 'CaldeiraLeggett':
+				#	self.CaldeiraDissipatorOrder3( LW_GPU, LW_temp_GPU, W_GPU, self.Product_ThetaP )
+				#else :
+				#	self.CaldeiraDissipatorOrder3( LW_GPU, LW_temp_GPU, W_GPU, dampingFunction ) 
+
+				#if dampingFunction == 'CaldeiraLeggett':
+				#	self.CaldeiraDissipatorOrder3( LW_GPU, LW_temp_GPU, W_GPU, self.Product_ThetaP )
+
+				if dampingFunction == 'ODM':
+					self.Lindbladian_ODM_Order1 ( LW_GPU, LW_temp_GPU, LW_temp2_GPU, W_GPU)
+
+				
 
 				if self.normalization == 'Wigner':	
 					norm = gpuarray.sum( W_GPU  ).get()*(self.dX*self.dP)
@@ -1190,6 +1394,8 @@ class GPU_Wigner2D_FFT(Propagator_Base):
 		self.file['/Ehrenfest/Hamiltonian_average'] = self.Hamiltonian_average
 
 		self.file['W_init'] = self.W_init.real
+
+		self.W_end =  W_GPU.get().real
 		self.file['W_end']  = self.W_end.real
 
 		self.file['negativeArea'] = self.negativeArea
@@ -1199,9 +1405,9 @@ class GPU_Wigner2D_FFT(Propagator_Base):
 		cuda_fft.cufftDestroy( self.plan_Z2Z_2D_Axes0.handle )
 		cuda_fft.cufftDestroy( self.plan_Z2Z_2D_Axes1.handle )
 
-		self.W_end =  W_GPU.get().real
+		
 
-		return  self.W_end
+		return  0
 
 
 #=====================================================================================================
@@ -1414,7 +1620,6 @@ class GPU_FokkerPlank2D_FFT(Propagator_Base):
 		self.file['/Ehrenfest/XdPotentialdX_average'] = self.XdPotentialdX_average
 		self.file['/Ehrenfest/Hamiltonian_average'] = self.Hamiltonian_average
 		
-
 		self.file['negativeArea'] = self.negativeArea
 
 		cuda_fft.cufftDestroy( self.plan_Z2Z_2D.handle )
