@@ -23,7 +23,7 @@ import cufft_wrapper as cuda_fft
 
 #-----------------------------------------------------------------------------------------
 
-copy_gpuarray_source = """
+gpu_array_copy_source = """
 #include <pycuda-complex.hpp>
 #include<math.h>
 
@@ -94,14 +94,15 @@ CUDAsource_P_plus_Lambda = """
 #include <pycuda-complex.hpp>
 #include<math.h>
 #define _USE_MATH_DEFINES
-%s;
+
+%s
+
 __global__ void Kernel(
    pycuda::complex<double> *W11, pycuda::complex<double> *W12, pycuda::complex<double> *W13, pycuda::complex<double> *W14,
    pycuda::complex<double> *W21, pycuda::complex<double> *W22, pycuda::complex<double> *W23, pycuda::complex<double> *W24,
    pycuda::complex<double> *W31, pycuda::complex<double> *W32, pycuda::complex<double> *W33, pycuda::complex<double> *W34,
    pycuda::complex<double> *W41, pycuda::complex<double> *W42, pycuda::complex<double> *W43, pycuda::complex<double> *W44 )
 {
-
     const int X_gridDIM = blockDim.x * gridDim.z;
     const int P_gridDIM = gridDim.x;
   
@@ -287,7 +288,7 @@ __global__ void Kernel(
 
 #------------------------------------------------------------------------------------
 
-BaseCUDAsource_Potential_X_minus_Theta = """
+DiracPropagator_X_minus_Theta_source_Base = """
 //
 //   source code for the right Dirac propagator without vector potential interaction 
 //   
@@ -297,6 +298,7 @@ BaseCUDAsource_Potential_X_minus_Theta = """
 #define _USE_MATH_DEFINES
 
 %s // Constants 
+
 
 __device__  double Potential0(double t, double x)
 {
@@ -329,7 +331,7 @@ __global__ void DiracPropagation4_Kernel(
    pycuda::complex<double> *W21, pycuda::complex<double> *W22, pycuda::complex<double> *W23, pycuda::complex<double> *W24,
    pycuda::complex<double> *W31, pycuda::complex<double> *W32, pycuda::complex<double> *W33, pycuda::complex<double> *W34,
    pycuda::complex<double> *W41, pycuda::complex<double> *W42, pycuda::complex<double> *W43, pycuda::complex<double> *W44, 
-   double t )
+   double t , pycuda::complex<double> *B_GP_minus_GPU, pycuda::complex<double> *B_GP_plus_GPU, double aGPitaevskii )
 {
   const int X_gridDIM = blockDim.x * gridDim.z;
   const int P_gridDIM = gridDim.x;
@@ -357,7 +359,9 @@ __global__ void DiracPropagation4_Kernel(
   pycuda::complex<double> U31,U32        ;
   pycuda::complex<double> U41,U42    ,U44;
 
-  pycuda::complex<double> expV = exp( -dt*D_Theta*theta*theta/2. - I*dt*( Potential0(t,xtheta) ) );		
+  double phaseGP = aGPitaevskii * pycuda::real<double>( B_GP_minus_GPU[indexTotal]  ); 
+ 
+  pycuda::complex<double> expV = exp( -dt*D_Theta*theta*theta/2. - I*dt*( Potential0(t,xtheta)  + phaseGP  ) );		
 	
 
   U22 = U11;    U44 = U33;
@@ -439,9 +443,11 @@ __global__ void DiracPropagation4_Kernel(
 
 """
 
+
+
 #------------------------------------------------------------------------------------
 
-BaseCUDAsource_Potential_X_plus_Theta = """
+DiracPropagator_X_plus_Theta_source_Base  = """
 //
 //   source code for the right Dirac propagator without vector potential interaction 
 //   
@@ -483,7 +489,7 @@ __global__ void DiracPropagation4_Kernel(
    pycuda::complex<double> *W21, pycuda::complex<double> *W22, pycuda::complex<double> *W23, pycuda::complex<double> *W24,
    pycuda::complex<double> *W31, pycuda::complex<double> *W32, pycuda::complex<double> *W33, pycuda::complex<double> *W34,
    pycuda::complex<double> *W41, pycuda::complex<double> *W42, pycuda::complex<double> *W43, pycuda::complex<double> *W44, 
-   double t )
+   double t , pycuda::complex<double> *B_GP_minus_GPU, pycuda::complex<double> *B_GP_plus_GPU , double aGPitaevskii)
 {
   const int X_gridDIM = blockDim.x * gridDim.z;
   const int P_gridDIM = gridDim.x;
@@ -511,7 +517,9 @@ __global__ void DiracPropagation4_Kernel(
   pycuda::complex<double> U31,U32        ;
   pycuda::complex<double> U41,U42    ,U44;
 
-  pycuda::complex<double> expV = exp( -dt*D_Theta*theta*theta/2. + I*dt*( Potential0(t,xtheta) ) );		
+  double phaseGP = aGPitaevskii * pycuda::real<double>( B_GP_plus_GPU[indexTotal]  ); 
+
+  pycuda::complex<double> expV = exp( -dt*D_Theta*theta*theta/2. + I*dt*( Potential0(t,xtheta) + phaseGP ) );		
 	
 
   U22 = U11;    U44 = U33;
@@ -875,7 +883,7 @@ __global__ void Filter_Kernel(
 """
 
 
-BaseCUDAsource_DampingODM = """
+DiracPropagator_DampingODM_source = """
 //
 //   source code for damping ODM 
 //   
@@ -892,7 +900,7 @@ __global__ void DampingODM_Kernel(
 pycuda::complex<double>*psi11,pycuda::complex<double>*psi12,pycuda::complex<double>*psi13,pycuda::complex<double>*psi14,             
 pycuda::complex<double>*psi21,pycuda::complex<double>*psi22,pycuda::complex<double>*psi23,pycuda::complex<double>*psi24, 
 pycuda::complex<double>*psi31,pycuda::complex<double>*psi32,pycuda::complex<double>*psi33,pycuda::complex<double>*psi34, pycuda::complex<double>*psi41,pycuda::complex<double>*psi42,pycuda::complex<double>*psi43,pycuda::complex<double>*psi44, 
-double x_displacement, double number_Lindbladians )
+double gammaDamping)
 {
 
 
@@ -905,10 +913,10 @@ double x_displacement, double number_Lindbladians )
   const int i =  (blockIdx.x                           +  P_gridDIM/2) %% P_gridDIM ;	
   const int j =  (threadIdx.x + blockIdx.z*blockDim.x  +  X_gridDIM/2) %% X_gridDIM ;	
 
-  double x     =     dx*( j - 0.5*X_gridDIM  ) - x_displacement;
+  double x     =     dx*( j - 0.5*X_gridDIM  );
   double theta = dtheta*( i - 0.5*P_gridDIM  );
 
-  double mass_c = mass*c/number_Lindbladians;
+  double mass_c = mass*c;
   pycuda::complex<double> I = pycuda::complex<double>(0.,1.);		
   
   double F = sqrt(lambdaBar);
@@ -1572,6 +1580,45 @@ __global__ void Kernel( pycuda::complex<double> *out,
 	}
 	"""
 
+
+Alpha_2_Average_source = """
+#include <pycuda-complex.hpp>
+#include<math.h>
+#define _USE_MATH_DEFINES
+
+%s; // Constants 
+	
+__global__ void Kernel( pycuda::complex<double> *out, 
+	   pycuda::complex<double> *W14, pycuda::complex<double> *W23, pycuda::complex<double> *W32, pycuda::complex<double> *W41)
+	  {
+
+          pycuda::complex<double> I = pycuda::complex<double>(0.,1.);
+
+	  const int X_gridDIM = blockDim.x * gridDim.z;
+	  const int P_gridDIM = gridDim.x;
+	  
+	  const int indexTotal = threadIdx.x + blockIdx.z*blockDim.x + X_gridDIM * blockIdx.x   ;	
+
+	  //const int i =  (blockIdx.x                           +  P_gridDIM/2) %% P_gridDIM ;	
+	  //const int j =  (threadIdx.x + blockIdx.z*blockDim.x  +  X_gridDIM/2) %% X_gridDIM ;	
+
+	  //double x     =     dx*( j - 0.5*X_gridDIM  );
+	  //double theta = dtheta*( i - 0.5*P_gridDIM  );
+
+	  pycuda::complex<double> _out; 
+	  
+	  _out  =   -I*W14[indexTotal];
+	  _out +=    I*W23[indexTotal];
+	  _out +=   -I*W32[indexTotal];
+	  _out +=    I*W41[indexTotal];	
+
+	  out[indexTotal] = _out;
+	  
+	}
+	"""
+
+
+
 P1_Alpha_1_Average_source = """
 #include <pycuda-complex.hpp>
 #include<math.h>
@@ -1640,6 +1687,97 @@ __global__ void Kernel( pycuda::complex<double> *out,
 
 #..........................................................................................................
 
+# Non-linear phase space
+
+gpu_sum_axis0_source = """
+#include <pycuda-complex.hpp>
+#include<math.h>
+#define _USE_MATH_DEFINES
+
+%s
+
+__global__ void Kernel( pycuda::complex<double> *Probability_x ,
+  pycuda::complex<double> *W11, pycuda::complex<double> *W22, pycuda::complex<double> *W33, pycuda::complex<double> *W44,
+  int P_DIM)
+{
+   int X_DIM = blockDim.x*gridDim.x;
+ 
+   const int index_x = threadIdx.x + blockDim.x*blockIdx.x ;
+
+   pycuda::complex<double> sum=0.;
+   for(int i=0; i<P_DIM; i++ ){
+      sum += W11[ index_x + i*X_DIM ];
+      sum += W22[ index_x + i*X_DIM ];
+      sum += W33[ index_x + i*X_DIM ];
+      sum += W44[ index_x + i*X_DIM ];
+		}	
+	
+   Probability_x[ index_x ] = pycuda::real(sum);
+}
+
+"""
+
+roll_FirstRowCopy_source = """
+#include <pycuda-complex.hpp>
+#include<math.h>
+#define _USE_MATH_DEFINES
+
+%s
+
+__global__ void Kernel( pycuda::complex<double> *W, pycuda::complex<double> *Probability_X  , int P_DIM)
+{
+   int X_DIM = blockDim.x*gridDim.x;
+ 
+   const int index_x = threadIdx.x + blockDim.x*blockIdx.x ;
+
+   pycuda::complex<double> firstRow = Probability_X[index_x];
+
+   for(int i=0; i<P_DIM; i++ )  W[ index_x + i*X_DIM ] = firstRow;
+
+}
+
+"""
+
+#.................................................................
+
+theta_fp_source = """
+#include <pycuda-complex.hpp>
+#include<math.h>
+#define _USE_MATH_DEFINES
+
+%s
+
+__device__ double f( double p)
+{
+return %s;
+}
+
+__global__ void Kernel( pycuda::complex<double> *B )
+{
+	
+   const int X_gridDIM = blockDim.x * gridDim.z;
+   const int P_gridDIM = gridDim.x;
+	  
+   const int indexTotal = threadIdx.x + blockIdx.z*blockDim.x + X_gridDIM * blockIdx.x   ;
+
+   const   int i =  (blockIdx.x                           +  P_gridDIM/2) %% P_gridDIM ;	
+   const   int j =  (threadIdx.x + blockIdx.z*blockDim.x  +  X_gridDIM/2) %% X_gridDIM ;	
+ 
+   double   p = dp*( i - 0.5*P_gridDIM  );
+
+    if( p >= 0.  )
+    	B[ indexTotal ] *=  f(p); 
+    else
+        B[ indexTotal ] *= -f(p); 
+
+}
+
+"""
+
+
+#................................................................
+
+
 class GPU_WignerDirac2D_4x4:
 	"""
 	Propagator in the X-Theta representation
@@ -1649,7 +1787,7 @@ class GPU_WignerDirac2D_4x4:
 	def __init__(self, X_gridDIM, P_gridDIM, X_amplitude, P_amplitude,
 			mass, c,  dt,timeSteps, skipFrames = 1,
 			frameSaveMode='Density', antiParticleNorm = True, antiParticleStepFiltering=False,
-			computeEnergy = 'False', dampingModel = 'CaldeiraLegget'):
+			computeEnergy = 'False'):
 
 		self.mass = mass
 		self.c = c
@@ -1660,7 +1798,7 @@ class GPU_WignerDirac2D_4x4:
 		self.antiParticleNorm = antiParticleNorm
 		self.antiParticleStepFiltering = antiParticleStepFiltering
 		self.computeEnergy = computeEnergy
-		self.dampingModel = dampingModel
+		#self.dampingModel = dampingModel
 
 		self.X_gridDIM   = X_gridDIM
 		self.P_gridDIM   = P_gridDIM
@@ -1698,6 +1836,8 @@ class GPU_WignerDirac2D_4x4:
 		self.CUDA_constants +=  '__constant__ double dp=%f;       '%self.dP
 		self.CUDA_constants +=  '__constant__ double dtheta=%f;   '%self.dTheta
 
+		#self.CUDA_constants += 'double aGP = %f; '%( 0. )
+
 		try: 
 			self.CUDA_constants += '__constant__ double D_Theta  = %f;'%(self.D_Theta )
 			self.CUDA_constants += '__constant__ double D_Lambda = %f;'%(self.D_Lambda)
@@ -1705,17 +1845,12 @@ class GPU_WignerDirac2D_4x4:
 			pass
 
 
-		try: 
-			self.CUDA_constants += '__constant__ double gammaDamping = %f;'%(self.gammaDamping)
-		except:
-			pass
 
 		try: 
 			self.CUDA_constants += '__constant__ double lambdaBar    = %f;'%(self.lambdaBar)
 		except:
 			pass
 
-		#self.CUDA_constants = 	self.CUDA_constants_essential #+ self.CUDA_constants_additional	
 
 		#............................... Initializing CUDA ...........................		
 
@@ -1740,9 +1875,8 @@ class GPU_WignerDirac2D_4x4:
 
 		self.Compiling_CUDA_functions()
 
-		#self.dot_GPU = reduction.ReductionKernel( np.complex128, neutral="0",
-	        #				reduce_expr="a+b", map_expr="x[i]*y[i]",
-	        #				arguments="pycuda::complex<double> *x, pycuda::complex<double> *y")
+		self.phase_LambdaTheta_GPU = gpuarray.to_gpu( 
+				 np.ascontiguousarray( np.exp( 0.5*1j*self.Lambda*self.Theta ) , dtype=np.complex128) )
 
 
 		
@@ -1755,6 +1889,8 @@ class GPU_WignerDirac2D_4x4:
 
 		self.plan_Z2Z_1D_Axes0 = cuda_fft.Plan_Z2Z_2D_Axis0(  (self.P_gridDIM,self.X_gridDIM)  )
 		self.plan_Z2Z_1D_Axes1 = cuda_fft.Plan_Z2Z_2D_Axis1(  (self.P_gridDIM,self.X_gridDIM)  ) 
+
+		self.plan_Z2Z_1D = cuda_fft.Plan_Z2Z(  (self.X_gridDIM,)  ,  batch=1 )
 
 	def Allocate_GPUVariables(self):
 
@@ -1785,6 +1921,8 @@ class GPU_WignerDirac2D_4x4:
 
 	def Compiling_CUDA_functions(self):
 		
+		#print CUDAsource_P_plus_Lambda%(self.CUDA_constants)
+	
 		self.DiracPropagator_P_plus_Lambda   =  \
 		SourceModule(CUDAsource_P_plus_Lambda%(self.CUDA_constants),arch="sm_20").get_function( "Kernel" )
 
@@ -1793,31 +1931,35 @@ class GPU_WignerDirac2D_4x4:
 		SourceModule(CUDAsource_P_minus_Lambda%(self.CUDA_constants),arch="sm_20").get_function( "Kernel" )
 
 		
+		DiracPropagator_X_minus_Theta_source = DiracPropagator_X_minus_Theta_source_Base%(
+				self.CUDA_constants,self.Potential_0_String,self.Potential_1_String,
+				self.Potential_2_String,self.Potential_3_String)
+
 		self.DiracPropagator_X_minus_Theta  =  \
-			SourceModule(BaseCUDAsource_Potential_X_minus_Theta%( self.CUDA_constants,self.Potential_0_String,
-			self.Potential_1_String,self.Potential_2_String,self.Potential_3_String),
-			arch="sm_20").get_function( "DiracPropagation4_Kernel" )
+			SourceModule( DiracPropagator_X_minus_Theta_source ,arch="sm_20").get_function( "DiracPropagation4_Kernel" )
 
 		
-		CUDAsource_Potential_X_plus_Theta = BaseCUDAsource_Potential_X_plus_Theta%(
+		DiracPropagator_X_plus_Theta_source = DiracPropagator_X_plus_Theta_source_Base%(
 				self.CUDA_constants,self.Potential_0_String,self.Potential_1_String,
 				self.Potential_2_String,self.Potential_3_String)
 
 		self.DiracPropagator_X_plus_Theta  =  \
-			SourceModule(CUDAsource_Potential_X_plus_Theta,arch="sm_20").get_function( "DiracPropagation4_Kernel" )
+			SourceModule( DiracPropagator_X_plus_Theta_source ,arch="sm_20").get_function( "DiracPropagation4_Kernel" )
 
-		self.copy_gpuarray_Function = SourceModule(copy_gpuarray_source).get_function( "Kernel" )
+		self.gpu_array_copy_Function = SourceModule(gpu_array_copy_source).get_function( "Kernel" )
 
 		self.FilterElectrons_Function = \
 		SourceModule(BaseCUDAsource_FilterGPU%(self.CUDA_constants),arch="sm_20").get_function("Filter_Kernel" )
 
 		self.AbsorbBoundary_x_Function = SourceModule(CUDAsource_AbsorbBoundary_x).get_function("Kernel") 
 
-		try:
+		try :
 			self.DiracPropagator_DampingODM = \
-			SourceModule(BaseCUDAsource_DampingODM%(self.CUDA_constants), arch="sm_20").get_function("DampingODM_Kernel")
+			SourceModule( DiracPropagator_DampingODM_source%(self.CUDA_constants),
+			arch="sm_20").get_function("DampingODM_Kernel")
 		except:
-			pass
+			pass		
+
 
 		self.Potential_0_Average_Function = \
 		SourceModule( Potential_0_Average_source%(
@@ -1874,6 +2016,19 @@ class GPU_WignerDirac2D_4x4:
 		self.P1_D_1_Potential_0_Average_Function = \
 		SourceModule( P1_D_1_Potential_0_Average_source%(
 				self.CUDA_constants,self.D_1_Potential_0_String),arch="sm_20").get_function( "Kernel" )
+		
+		#
+
+		self.roll_FirstRowCopy_Function = SourceModule(									     						roll_FirstRowCopy_source%self.CUDA_constants, arch="sm_20").get_function( "Kernel" )
+
+		self.gpu_sum_axis0_Function = SourceModule(									     						gpu_sum_axis0_source%self.CUDA_constants, arch="sm_20").get_function( "Kernel" )
+
+		try:
+			self.theta_fp_Damping_Function = SourceModule(\
+					theta_fp_source%(self.CUDA_constants,self.fp_Damping_String), 
+					arch="sm_20").get_function("Kernel")
+		except AttributeError: 
+			pass	
 
 	#......................................................................................	
 
@@ -2268,7 +2423,7 @@ class GPU_WignerDirac2D_4x4:
 
 	def Fourier_Theta_To_P_GPU(self, W_out_GPU ):
 		cuda_fft.ifft_Z2Z( W_out_GPU , W_out_GPU , self.plan_Z2Z_1D_Axes0 )
-		W_out_GPU *= -1./float(self.P_gridDIM)   # NEGATIVE SIGN
+		W_out_GPU *= 1./float(self.P_gridDIM)   # NEGATIVE SIGN
 
 	def Fourier_X_To_Lambda_GPU(self,W_out_GPU):
 		cuda_fft.fft_Z2Z( W_out_GPU, W_out_GPU , self.plan_Z2Z_1D_Axes1 )
@@ -2398,6 +2553,28 @@ class GPU_WignerDirac2D_4x4:
 		W0 += W[3,3]
 		
 		return fftpack.fftshift( W0 )
+
+	#...................................................................................
+
+	def MakeGrossPitaevskiiTerms(self, B_minus_GPU, B_plus_GPU, Prob_X_GPU ):
+		"""
+		Makes the non-linear terms that characterize the Gross-Pitaevskii equation
+		"""
+		P_gridDIM_32 = np.int32(self.P_gridDIM)
+
+		cuda_fft.fft_Z2Z( Prob_X_GPU, Prob_X_GPU, self.plan_Z2Z_1D )
+
+		self.roll_FirstRowCopy_Function( B_minus_GPU, Prob_X_GPU, P_gridDIM_32,
+				 block=self.blockCUDA, grid=(self.X_gridDIM/512,1)  )	
+
+		self.roll_FirstRowCopy_Function( B_plus_GPU,  Prob_X_GPU, P_gridDIM_32,
+				 block=self.blockCUDA, grid=(self.X_gridDIM/512,1)  )	
+
+		B_minus_GPU /= self.phase_LambdaTheta_GPU 
+		B_plus_GPU  *= self.phase_LambdaTheta_GPU 
+
+		self.Fourier_Lambda_To_X_GPU( B_minus_GPU )
+		self.Fourier_Lambda_To_X_GPU( B_plus_GPU  )
 
 	#...................................................................................
 
@@ -2584,7 +2761,59 @@ class GPU_WignerDirac2D_4x4:
 	#           Caldeira Legget Damping
 	#....................................................................
 
-	#...........Caldeira Legget..................................................
+
+	def Theta_fp_Damping(self, LW_GPU, W_GPU):
+        	self.gpu_array_copy_Function( LW_GPU , W_GPU , block=self.blockCUDA , grid=self.gridCUDA )
+
+		self.theta_fp_Damping_Function( LW_GPU , block=self.blockCUDA , grid=self.gridCUDA )
+
+		# x p  ->  theta p
+        	self.Fourier_P_To_Theta_GPU( LW_GPU )
+        	LW_GPU *= self.Theta_GPU	
+        	self.Fourier_Theta_To_P_GPU( LW_GPU )
+
+
+	def CaldeiraDissipatorOrder3(self, LW_GPU, LW_temp_GPU, W_GPU, dampingFunction):
+		# dampingFunction is a function of momentum
+		LW_GPU  *= 0j
+		LW_GPU  +=   W_GPU
+
+		dampingFunction( LW_temp_GPU , W_GPU )
+		LW_GPU  += 2./3. * 1j * self.dt *self.gammaDamping * LW_temp_GPU			
+		
+		dampingFunction( LW_temp_GPU , LW_GPU )
+		LW_GPU  +=  2./2. * 1j * self.dt *self.gammaDamping * LW_temp_GPU
+
+		dampingFunction( LW_temp_GPU , LW_GPU )
+		W_GPU  +=  2. * 1j * self.dt *self.gammaDamping * LW_temp_GPU
+
+	def CaldeiraDissipatorOrder3_4x4(self, LW1_GPU, LW2_GPU, dampingFunction,
+					 W11_GPU, W12_GPU, W13_GPU, W14_GPU,
+		    			 W21_GPU, W22_GPU, W23_GPU, W24_GPU,
+		    			 W31_GPU, W32_GPU, W33_GPU, W34_GPU,
+		    			 W41_GPU, W42_GPU, W43_GPU, W44_GPU):
+
+		self.CaldeiraDissipatorOrder3( LW1_GPU, LW2_GPU, W11_GPU ,dampingFunction)
+		self.CaldeiraDissipatorOrder3( LW1_GPU, LW2_GPU, W12_GPU ,dampingFunction)
+		self.CaldeiraDissipatorOrder3( LW1_GPU, LW2_GPU, W13_GPU ,dampingFunction)
+		self.CaldeiraDissipatorOrder3( LW1_GPU, LW2_GPU, W14_GPU ,dampingFunction)
+
+		self.CaldeiraDissipatorOrder3( LW1_GPU, LW2_GPU, W21_GPU ,dampingFunction)
+		self.CaldeiraDissipatorOrder3( LW1_GPU, LW2_GPU, W22_GPU ,dampingFunction)
+		self.CaldeiraDissipatorOrder3( LW1_GPU, LW2_GPU, W23_GPU ,dampingFunction)
+		self.CaldeiraDissipatorOrder3( LW1_GPU, LW2_GPU, W24_GPU ,dampingFunction)
+
+		self.CaldeiraDissipatorOrder3( LW1_GPU, LW2_GPU, W31_GPU ,dampingFunction)
+		self.CaldeiraDissipatorOrder3( LW1_GPU, LW2_GPU, W32_GPU ,dampingFunction)
+		self.CaldeiraDissipatorOrder3( LW1_GPU, LW2_GPU, W33_GPU ,dampingFunction)
+		self.CaldeiraDissipatorOrder3( LW1_GPU, LW2_GPU, W34_GPU ,dampingFunction)
+
+		self.CaldeiraDissipatorOrder3( LW1_GPU, LW2_GPU, W41_GPU ,dampingFunction)
+		self.CaldeiraDissipatorOrder3( LW1_GPU, LW2_GPU, W42_GPU ,dampingFunction)
+		self.CaldeiraDissipatorOrder3( LW1_GPU, LW2_GPU, W43_GPU ,dampingFunction)
+		self.CaldeiraDissipatorOrder3( LW1_GPU, LW2_GPU, W44_GPU ,dampingFunction)
+
+
 
 	def Product_ThetaP_GPU(self, W_GPU):
 		W_GPU *= self.P_GPU
@@ -2595,8 +2824,9 @@ class GPU_WignerDirac2D_4x4:
 
 
 	def CaldeiraDissipatorOrder2(self, LW1_GPU, LW2_GPU, W_GPU):
-		self.copy_gpuarray_Function( LW1_GPU, W_GPU, block=self.blockCUDA, grid=self.gridCUDA )
-		self.copy_gpuarray_Function( LW2_GPU, W_GPU, block=self.blockCUDA, grid=self.gridCUDA )
+		
+		self.gpu_array_copy_Function( LW1_GPU , W_GPU , block=self.blockCUDA , grid=self.gridCUDA )
+		self.gpu_array_copy_Function( LW2_GPU , W_GPU , block=self.blockCUDA , grid=self.gridCUDA )
 
 		self.Product_ThetaP_GPU( LW1_GPU )
 		LW2_GPU += 1j * self.dt *self.gammaDamping * LW1_GPU			
@@ -2866,7 +3096,7 @@ class GPU_WignerDirac2D_4x4:
 		f11['potential_2_String'] = self.Potential_2_String
 		f11['potential_3_String'] = self.Potential_3_String
 		
-		#self.Fourier_4X4_P_To_Theta(self.W_init)
+
 		
 		W11_GPU = gpuarray.to_gpu( np.ascontiguousarray(self.W_init[0,0],dtype = np.complex128) )
 		W12_GPU = gpuarray.to_gpu( np.ascontiguousarray(self.W_init[0,1],dtype = np.complex128) )
@@ -2941,6 +3171,9 @@ class GPU_WignerDirac2D_4x4:
 
 		initial_time = time.time()
 
+		B_GP_minus_GPU = gpuarray.empty_like( W11_GPU )
+		B_GP_plus_GPU  = gpuarray.empty_like( W22_GPU )
+		Prob_X_GPU     = gpuarray.empty( (self.X_gridDIM) , dtype = np.complex128 )
 
 		X_Average  = []
 		P_Average  = []
@@ -2959,16 +3192,17 @@ class GPU_WignerDirac2D_4x4:
 		P1_Alpha_1_Average          = []
 		X1_Alpha_1_Average          = []
 
-		try:
-			number_ODMLindbladians = len( self.ODMLindbladianDisplacements )
-			number_ODMLindbladians_GPU = np.float64( number_ODMLindbladians )
-		except:
-			pass 
+		
 
 		timeRange        = np.array([0.])
 
 		print ' cuda grid =   (', self.blockCUDA , ' , ' , self.gridCUDA, ')'
 
+		P_gridDIM_32   = np.int32(self.P_gridDIM)
+
+
+		aGPitaevskii_GPU = np.float64( self.grossPitaevskiiCoefficient )
+		gammaDamping_GPU = np.float64( self.gammaDamping )
 
 
 		for t_index in timeRangeIndex:
@@ -2976,10 +3210,16 @@ class GPU_WignerDirac2D_4x4:
 
 				t_GPU = np.float64( self.dt * t_index )
 				
-				#norm = self.Wigner_4x4_Norm_GPU(W11_GPU, W22_GPU, W33_GPU, W44_GPU)
-				#print 'norm = ', norm	
+				#...............................................................................
+
+				if self.grossPitaevskiiCoefficient != 0. :
+					self.gpu_sum_axis0_Function( 
+						 Prob_X_GPU, W11_GPU, W22_GPU, W33_GPU, W44_GPU,
+						 P_gridDIM_32, block=(512,1,1), grid=(self.X_gridDIM/512,1)   )
+
+					self.MakeGrossPitaevskiiTerms( B_GP_minus_GPU, B_GP_plus_GPU, Prob_X_GPU ) 
 				
-				#............... Ehrenfest ..............................................
+				#............... Ehrenfest ....................................................
 
 				X_Average.append(  self.X_Average(  _W11_GPU, W11_GPU, W22_GPU, W33_GPU, W44_GPU ) )
 				P_Average.append(  self.P_Average(  _W11_GPU, W11_GPU, W22_GPU, W33_GPU, W44_GPU ) )
@@ -3120,13 +3360,16 @@ class GPU_WignerDirac2D_4x4:
 								    W21_GPU,  W22_GPU,  W23_GPU,  W24_GPU,
 								    W31_GPU,  W32_GPU,  W33_GPU,  W34_GPU,
 								    W41_GPU,  W42_GPU,  W43_GPU,  W44_GPU, t_GPU,
+								    B_GP_minus_GPU, B_GP_plus_GPU, aGPitaevskii_GPU,	
 								    block=self.blockCUDA, grid=self.gridCUDA )
 
+				
 				self.DiracPropagator_X_plus_Theta( 
 								    W11_GPU,  W12_GPU,  W13_GPU,  W14_GPU,
 								    W21_GPU,  W22_GPU,  W23_GPU,  W24_GPU,
 								    W31_GPU,  W32_GPU,  W33_GPU,  W34_GPU,
 								    W41_GPU,  W42_GPU,  W43_GPU,  W44_GPU, t_GPU,
+								    B_GP_minus_GPU, B_GP_plus_GPU, aGPitaevskii_GPU,
 								    block=self.blockCUDA, grid=self.gridCUDA )
 
 				
@@ -3138,13 +3381,12 @@ class GPU_WignerDirac2D_4x4:
 
 				if self.gammaDamping > 0 :
 					if self.dampingModel == 'ODM':
-						x0_GPU = np.float64( 0. )
 						self.DiracPropagator_DampingODM(
 								 W11_GPU, W12_GPU, W13_GPU, W14_GPU,
 				    				 W21_GPU, W22_GPU, W23_GPU, W24_GPU,
 				    			 	 W31_GPU, W32_GPU, W33_GPU, W34_GPU,
 				    			 	 W41_GPU, W42_GPU, W43_GPU, W44_GPU,
-								 x0_GPU, number_ODMLindbladians_GPU,
+								 gammaDamping_GPU,
 					                	 block=self.blockCUDA, grid=self.gridCUDA )
 
 				#  x theta  ->  x p
@@ -3326,6 +3568,11 @@ class GPU_WignerDirac2D_4x4:
 		W44 = W44_GPU.get()
 
 		W_end = np.array([ [W11,W12,W13,W14], [W21,W22,W23,W24], [W31,W32,W33,W34], [W41,W42,W43,W44] ])
+
+
+		self.plan_Z2Z_1D_Axes0.__del__()
+		self.plan_Z2Z_1D_Axes1.__del__()
+		self.plan_Z2Z_1D.__del__()		
 
 		self.W_end = W_end		
 
