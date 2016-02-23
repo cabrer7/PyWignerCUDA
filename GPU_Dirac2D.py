@@ -12,6 +12,7 @@ import time
 import sys
 from scipy.special import laguerre
 from scipy.special import genlaguerre
+from scipy.special import legendre
 
 #from pyfft.cuda import Plan
 import pycuda.gpuarray as gpuarray
@@ -78,7 +79,7 @@ __global__ void Kernel(
 
 
 
-BaseCUDAsource4_VectorPotential = """
+DiracPropagatorA_source = """
 //
 //   source code for the Dirac propagator with scalar-vector potential interaction
 //   and smooth time dependence
@@ -94,21 +95,21 @@ BaseCUDAsource4_VectorPotential = """
 
 __device__  double A0(double t, double x, double y)
 {
-    return (%s) ;
+    return %s ;
 }
 __device__  double A1(double t, double x, double y)
 {
-   return (%s) ;
+   return %s ;
 }
 
 __device__  double A2(double t, double x, double y)
 {
-   return (%s) ;
+   return %s ;
 }
 
 __device__  double A3(double t, double x, double y)
 {
-   return (%s) ;
+   return %s ;
 }
 
 __device__ double VectorPotentialSquareSum(double t, double x, double y)
@@ -118,7 +119,7 @@ __device__ double VectorPotentialSquareSum(double t, double x, double y)
 
 //-------------------------------------------------------------------------------------------------------------
 
-__global__ void DiracPropagation4_Kernel(
+__global__ void DiracPropagatorA_Kernel(
  pycuda::complex<double>  *Psi1, pycuda::complex<double>   *Psi2, pycuda::complex<double>  *Psi3, pycuda::complex<double>  *Psi4, double t )
 {
   pycuda::complex<double> I = pycuda::complex<double>(0.,1.);
@@ -140,7 +141,7 @@ __global__ void DiracPropagation4_Kernel(
   double F;
   F = sqrt( pow(mass*c*c,2.) + c*VectorPotentialSquareSum(t,x,y)  );	
  
-  pycuda::complex<double> expV0 = exp( I*dt*A0(t,x,y) );	
+  pycuda::complex<double> expV0 = exp( -I*dt*A0(t,x,y) );	
 
 
   pycuda::complex<double> U11 = pycuda::complex<double>( cos(dt*F) ,  -mass*c*c*sin(dt*F)/F );
@@ -329,13 +330,13 @@ class GPU_Dirac2D:
 
 		self.DiracPropagatorK = SourceModule(BaseCUDAsource_K%self.CUDA_constants,arch="sm_20").get_function( "Kernel" )
 
-		self.DiracPropagatorStep4  =  \
-		SourceModule(BaseCUDAsource4_VectorPotential%(
+		self.DiracPropagatorA  =  \
+		SourceModule( DiracPropagatorA_source%(
 					self.CUDA_constants,
-					self.potentialString0, 
- 					self.potentialString1, 
-					self.potentialString2, 
-					self.potentialString3),arch="sm_20").get_function( "DiracPropagation4_Kernel" )
+					self.Potential_0_String, 
+ 					self.Potential_1_String, 
+					self.Potential_2_String, 
+					self.Potential_3_String),arch="sm_20").get_function( "DiracPropagatorA_Kernel" )
 
 		self.DiracAbsorbBoundary_xy  =  \
 		SourceModule(BaseCUDAsource_AbsorbBoundary_xy,arch="sm_20").get_function( "AbsorbBoundary_Kernel" )
@@ -364,7 +365,7 @@ class GPU_Dirac2D:
 #-------------------------------------------------------------------------------------------------------------------
 #           Gaussian PARTICLE spinors 
 
-	def GaussianSpinor_ParticleUp(self, x_init, p_init, s) :
+	def _GaussianSpinor_ParticleUp(self, x_init, p_init, s) :
 		"""
 		x,p: Gaussian center
 		s:   Gaussian standard deviation in x
@@ -382,6 +383,23 @@ class GPU_Dirac2D:
 		Psi2 =  self.X*0j + self.Y*0j   
 		Psi3 =  self.X*0j + self.Y*0j   
 		Psi4 =  rho*(px + 1j*py)	
+		
+		return np.array([Psi1, Psi2, Psi3, Psi4 ])
+
+	def GaussianSpinor_ParticleUp(self, p_init, modulation_Function ):
+		"""
+		
+		"""
+		px, py = p_init	
+
+		rho  = np.exp(1j*self.X*px + 1j*self.Y*py )*modulation_Function( self.X , self.Y ) 
+
+		p0  = np.sqrt( px*px + py*py + (self.mass*self.c)**2 )
+		
+		Psi1 =  rho*( p0  + self.mass*self.c ) 
+		Psi2 =  rho*0.
+		Psi3 =  rho*0.
+		Psi4 =  rho*( px + 1j*py )	
 		
 		return np.array([Psi1, Psi2, Psi3, Psi4 ])
 
@@ -438,21 +456,93 @@ class GPU_Dirac2D:
 		
 		return np.array([Psi1, Psi2, Psi3, Psi4 ])		
 
-	def LandaoLevelSpinor(self, B , n , x , y ):
+	def Boost(self, p1,p2):
+		#  Boost matrix in Dirac gamma matrices
+		p0 = np.sqrt( (self.mass*self.c)**2  +  p1**2 + p2**2 )
+		K = np.sqrt( 2*self.mass*self.c*(self.mass*self.c + p0) )
+		
+		B00     = self.mass*self.c + p0
+		p_Plus  = p1 + 1j*p2 
+		p_Minus = p1 - 1j*p2 
+		
+		return np.array([ [B00, 0., 0., p_Minus], [0., B00, p_Plus,0.], [0.,p_Minus,B00,0.], [p_Plus,0.,0.,B00]  ])
+		
+
+	def LandauLevelSpinor(self, B , n , x , y ,type=1):
+		# Symmetric Gauge 
 		def energy(n):
 			return np.sqrt( (self.mass*self.c**2)**2 + 2*B*self.c*self.hBar*n  )
 
-		K = B*(self.X**2 + self.Y**2)/( 4.*self.c*self.hBar )
+		K = B*( (self.X-x)**2 + (self.Y-y)**2)/( 4.*self.c*self.hBar )
 		
-		psi1 = np.exp(-K)*(  self.mass*self.c**2 + energy(n) )*laguerre(n)( 2*K ) 
+		psi1 = np.exp(-K)*( energy(n) + self.mass*self.c**2  )*laguerre(n)( 2*K ) 
 
-		psi3 = np.exp(-K)*( -self.mass*self.c**2 + energy(n) )*laguerre(n)( 2*K ) 
+		psi3 = np.exp(-K)*( energy(n) - self.mass*self.c**2  )*laguerre(n)( 2*K ) 
 
 		if n>0:
-			psi2 = 1j*np.exp(-K)*(self.X + 1j*self.Y)*genlaguerre(n-1,1)( 2*K )
+			psi2 = 1j*np.exp(-K)*( self.X-x + 1j*(self.Y-y) )*genlaguerre(n-1,1)( 2*K )
 
 		else: 
 			psi2 = 0.*K		
+
+		psi4 = psi2	
+
+		if type==1:
+			spinor = np.array([ psi1 , 0*psi2 , 0*psi3 , psi4  ])
+
+		elif type ==2:
+			spinor = np.array([ 0*psi1 , psi2 , psi3 , 0*psi4  ])
+
+		else :
+			print 'Error: type spinor must be 1 or 2'
+
+		norm = self.Norm(spinor)
+
+       		spinor /= norm 
+
+		return spinor
+
+	def LandauLevelSpinor_Boosted(self, B , n , x , y , py ):
+
+		K = B*( (self.X-x)**2 + (self.Y-y)**2)/( 4.*self.c*self.hBar )
+
+		p0 = np.sqrt( (self.mass*self.c)**2 + py**2 )
+
+		psi1 = 0j*K
+		psi2 =  1j*self.c* np.exp(-K) * py   *(  p0 - self.mass*self.c  )
+		psi3 =     self.c* np.exp(-K) * py*py*(  p0 - self.mass*self.c  ) + 0j
+		psi4 = 0j*K
+
+		spinor = np.array([ psi1 , psi2 , psi3 , psi4  ])
+
+		norm = self.Norm(spinor)
+
+       		spinor /= norm 
+
+		return spinor
+ 
+
+
+
+	def LandaoLevelSpinor_GaugeX(self, B , n ,  Py ):
+		def energy(n):
+			return np.sqrt( (self.mass*self.c**2)**2 + 2*B*self.c*self.hBar*n  )
+
+		K = B*(self.X - self.c*Py/B)**2/( 2.*self.c*self.hBar )
+		
+		psi1 = np.exp(-K)*(  self.mass*self.c**2 + energy(n) )* legendre(n)( K/np.sqrt(B*self.c*self.hBar) ) 
+
+		psi3 = np.exp(-K)*(  self.mass*self.c**2 + energy(n) )* legendre(n)( K/np.sqrt(B*self.c*self.hBar) ) 
+
+		if n>0:
+			psi2 = np.exp(-K)*(  self.mass*self.c**2 + energy(n) )* legendre(n-1)( K/np.sqrt(B*self.c*self.hBar) ) 	
+			psi2 = 2*1j*n*np.sqrt(B*self.c*self.hBar)
+
+			psi4 = -psi2
+
+		else: 
+			psi2 = 0.*K
+			psi4 = 0.*K	
 
 
 		spinor = np.array([psi1 , psi2 , psi3 , psi2  ])
@@ -729,10 +819,10 @@ class GPU_Dirac2D:
 
 		
 
-		f1['potentialString0'] = self.potentialString0
-		f1['potentialString1'] = self.potentialString1
-		f1['potentialString2'] = self.potentialString2
-		f1['potentialString3'] = self.potentialString3
+		f1['Potential_0_String'] = self.Potential_0_String
+		f1['Potential_1_String'] = self.Potential_1_String
+		f1['Potential_2_String'] = self.Potential_2_String
+		f1['Potential_3_String'] = self.Potential_3_String
 
 		self.Psi1_init, self.Psi2_init, self.Psi3_init, self.Psi4_init = self.Psi_init		
 
@@ -804,7 +894,7 @@ class GPU_Dirac2D:
 				#             Mass potential
 				#..............................................
 
-				self.DiracPropagatorStep4( Psi1_GPU,  Psi2_GPU,  Psi3_GPU,  Psi4_GPU,
+				self.DiracPropagatorA( Psi1_GPU,  Psi2_GPU,  Psi3_GPU,  Psi4_GPU,
 							   t_GPU, block=blockCUDA, grid=gridCUDA )
 				
 				#        Absorbing boundary
