@@ -40,6 +40,72 @@ __global__ void Kernel(pycuda::complex<double> *W_new , pycuda::complex<double> 
 
 """
 
+pickup_negatives_source =  """
+//............................................................................................
+#include <pycuda-complex.hpp>
+#include<math.h>
+#define _USE_MATH_DEFINES
+
+__global__ void pickup_negatives_Kernel( pycuda::complex<double>  *W_neg,
+   pycuda::complex<double>  *W11,  pycuda::complex<double>  *W22, pycuda::complex<double>  *W33, pycuda::complex<double>  *W44 )
+{
+ 
+  const int X_gridDIM = blockDim.x * gridDim.z;
+  const int P_gridDIM = gridDim.x;
+  
+  const int indexTotal = threadIdx.x + blockIdx.z*blockDim.x + X_gridDIM * blockIdx.x   ;
+  
+  pycuda::complex<double> value = W11[indexTotal];
+  value += W22[indexTotal];
+  value += W33[indexTotal];
+  value += W44[indexTotal];   
+
+  double value_re = pycuda::real<double>( value );
+ 
+  if( value_re < 0. ) W_neg[indexTotal] = pycuda::complex<double>(value_re,0.);
+
+  else W_neg[indexTotal] = pycuda::complex<double>(0. , 0.);
+  
+}
+"""
+
+transmission_source =  """
+//............................................................................................
+#include <pycuda-complex.hpp>
+#include<math.h>
+#define _USE_MATH_DEFINES
+
+%s
+
+__global__ void transmission_Kernel( pycuda::complex<double>  *W_transmission,
+   pycuda::complex<double>  *W11,  pycuda::complex<double>  *W22, pycuda::complex<double>  *W33, pycuda::complex<double>  *W44 )
+{
+ 
+  const int X_gridDIM = blockDim.x * gridDim.z;
+  const int P_gridDIM = gridDim.x;
+  
+  const int indexTotal = threadIdx.x + blockIdx.z*blockDim.x + X_gridDIM * blockIdx.x   ;	
+
+  //const int i =  (blockIdx.x                           +  P_gridDIM/2) %% P_gridDIM ;	
+  const int j =  (threadIdx.x + blockIdx.z*blockDim.x  +  X_gridDIM/2) %% X_gridDIM ;	
+
+  double x     =     dx*( j - 0.5*X_gridDIM  );
+  //double theta = dtheta*( i - 0.5*P_gridDIM  );
+  
+  pycuda::complex<double> value = W11[indexTotal];
+  value += W22[indexTotal];
+  value += W33[indexTotal];
+  value += W44[indexTotal];   
+
+  //double value_re = pycuda::real<double>( value );
+ 
+  if( x > 10. ) W_transmission[indexTotal] = value;
+
+  else W_transmission[indexTotal] = pycuda::complex<double>(0. , 0.);
+  
+}
+"""
+
 #------------------------------------------------------------------------------------------
 
 CUDAsource_AbsorbBoundary_x  =  """
@@ -1836,8 +1902,6 @@ class GPU_WignerDirac2D_4x4:
 		self.CUDA_constants +=  '__constant__ double dp=%f;       '%self.dP
 		self.CUDA_constants +=  '__constant__ double dtheta=%f;   '%self.dTheta
 
-		#self.CUDA_constants += 'double aGP = %f; '%( 0. )
-
 		try: 
 			self.CUDA_constants += '__constant__ double D_Theta  = %f;'%(self.D_Theta )
 			self.CUDA_constants += '__constant__ double D_Lambda = %f;'%(self.D_Lambda)
@@ -1952,6 +2016,13 @@ class GPU_WignerDirac2D_4x4:
 		SourceModule(BaseCUDAsource_FilterGPU%(self.CUDA_constants),arch="sm_20").get_function("Filter_Kernel" )
 
 		self.AbsorbBoundary_x_Function = SourceModule(CUDAsource_AbsorbBoundary_x).get_function("Kernel") 
+
+
+		self.pickup_negatives_Function = SourceModule(pickup_negatives_source).get_function("pickup_negatives_Kernel") 
+
+
+		self.transmission_Function = SourceModule(
+			transmission_source%(self.CUDA_constants)).get_function("transmission_Kernel") 
 
 		try :
 			self.DiracPropagator_DampingODM = \
@@ -2206,6 +2277,7 @@ class GPU_WignerDirac2D_4x4:
 	def ConstructMajoranaSpinor(self, Psi_real ):
 		"""
 		returns a spinor in the stanbdard representation from a spinor in the Majorana representation
+		Depreciated
 		"""
 		PsiMajorana    =  np.empty_like( Psi_real + 0j ) 
 
@@ -2217,6 +2289,27 @@ class GPU_WignerDirac2D_4x4:
 		return PsiMajorana
 
 
+	#...................................................................................
+
+	def MajoranaSpinorPlus(self, Psi ):
+		PsiMajorana    =  np.empty_like( Psi + 0j ) 
+
+		PsiMajorana[0] = 0.5*( Psi[0] - Psi[3].conj() )
+		PsiMajorana[1] = 0.5*( Psi[1] + Psi[2].conj() )
+		PsiMajorana[2] = 0.5*( Psi[2] + Psi[1].conj() )
+		PsiMajorana[3] = 0.5*( Psi[3] - Psi[0].conj() )
+
+		return PsiMajorana
+
+	def MajoranaSpinorMinus(self, Psi ):
+		PsiMajorana    =  np.empty_like( Psi + 0j ) 
+
+		PsiMajorana[0] = 0.5*( Psi[0] + Psi[3].conj() )
+		PsiMajorana[1] = 0.5*( Psi[1] - Psi[2].conj() )
+		PsiMajorana[2] = 0.5*( Psi[2] - Psi[1].conj() )
+		PsiMajorana[3] = 0.5*( Psi[3] + Psi[0].conj() )
+
+		return PsiMajorana
 
 	#...................................................................................
 
@@ -2552,7 +2645,7 @@ class GPU_WignerDirac2D_4x4:
 		W0 += W[2,2]
 		W0 += W[3,3]
 		
-		return fftpack.fftshift( W0 )
+		return W0
 
 	#...................................................................................
 
@@ -2703,59 +2796,116 @@ class GPU_WignerDirac2D_4x4:
 		    			W31_GPU, W32_GPU, W33_GPU, W34_GPU,
 		    			W41_GPU, W42_GPU, W43_GPU, W44_GPU):
 
-		W_= self.fftshift( W11_GPU.get().real.astype(np.float64) );
-		f11.create_dataset('11/'+str(t), data = np.frombuffer(W_) )
+		W_= self.fftshift( W11_GPU.get() );
+		f11.create_dataset('W_real_11/'+str(t), data = np.real(W_) )
+		f11.create_dataset('W_imag_11/'+str(t), data = np.imag(W_) )
 
-		W_= self.fftshift( W12_GPU.get().real.astype(np.float64) );
-		f11.create_dataset('12/'+str(t), data = np.frombuffer(W_) );
+		W_= self.fftshift( W12_GPU.get() );
+		f11.create_dataset('W_real_12/'+str(t), data = np.real(W_) )
+		f11.create_dataset('W_imag_12/'+str(t), data = np.imag(W_) )
 
-		W_= self.fftshift( W13_GPU.get().real.astype(np.float64) );	
-		f11.create_dataset('13/'+str(t), data = np.frombuffer(W_) );
+		W_= self.fftshift( W13_GPU.get() );
+		f11.create_dataset('W_real_13/'+str(t), data = np.real(W_) )
+		f11.create_dataset('W_imag_13/'+str(t), data = np.imag(W_) )
 
-		W_= self.fftshift( W14_GPU.get().real.astype(np.float64) );	
-		f11.create_dataset('14/'+str(t), data = np.frombuffer(W_) );
+		W_= self.fftshift( W14_GPU.get() );	
+		f11.create_dataset('W_real_14/'+str(t), data = np.real(W_) )
+		f11.create_dataset('W_imag_14/'+str(t), data = np.imag(W_) )
 
 		#
 	
-		W_= self.fftshift( W21_GPU.get().real.astype(np.float64) );
-		f11.create_dataset('21/'+str(t), data = np.frombuffer(W_) )
+		W_= self.fftshift( W21_GPU.get() );
+		f11.create_dataset('W_real_21/'+str(t), data = np.real(W_) )
+		f11.create_dataset('W_imag_21/'+str(t), data = np.imag(W_) )
 
-		W_= self.fftshift( W22_GPU.get().real.astype(float64) );
-		f11.create_dataset('22/'+str(t), data = np.frombuffer(W_) );
+		W_= self.fftshift( W21_GPU.get() );
+		f11.create_dataset('W_real_22/'+str(t), data = np.real(W_) )
+		f11.create_dataset('W_imag_22/'+str(t), data = np.imag(W_) )
 
-		W_= self.fftshift( W23_GPU.get().real.astype(np.float64) );	
-		f11.create_dataset('23/'+str(t), data = np.frombuffer(W_) );
+		W_= self.fftshift( W21_GPU.get() );
+		f11.create_dataset('W_real_23/'+str(t), data = np.real(W_) )
+		f11.create_dataset('W_imag_23/'+str(t), data = np.imag(W_) )
 
-		W_= self.fftshift( W24_GPU.get().real.astype(np.float64) );	
-		f11.create_dataset('24/'+str(t), data = np.frombuffer(W_) );
+		W_= self.fftshift( W21_GPU.get() );
+		f11.create_dataset('W_real_24/'+str(t), data = np.real(W_) )
+		f11.create_dataset('W_imag_24/'+str(t), data = np.imag(W_) )
 
 		#
 		
-		W_= self.fftshift( W31_GPU.get().real.astype(np.float64) );
-		f11.create_dataset('31/'+str(t), data = np.frombuffer(W_) )
+		W_= self.fftshift( W31_GPU.get() );
+		f11.create_dataset('W_real_31/'+str(t), data = np.real(W_) )
+		f11.create_dataset('W_imag_31/'+str(t), data = np.imag(W_) )
 
-		W_= self.fftshift( W32_GPU.get().real.astype(np.float64) );
-		f11.create_dataset('32/'+str(t), data = np.frombuffer(W_) );
+		W_= self.fftshift( W32_GPU.get() );
+		f11.create_dataset('W_real_32/'+str(t), data = np.real(W_) )
+		f11.create_dataset('W_imag_32/'+str(t), data = np.imag(W_) )
 
-		W_= self.fftshift( W33_GPU.get().real.astype(np.float64) );	
-		f11.create_dataset('33/'+str(t), data = np.frombuffer(W_) );
+		W_= self.fftshift( W33_GPU.get() );
+		f11.create_dataset('W_real_33/'+str(t), data = np.real(W_) )
+		f11.create_dataset('W_imag_33/'+str(t), data = np.imag(W_) )
 
-		W_= self.fftshift( W34_GPU.get().real.astype(np.float64) );	
-		f11.create_dataset('34/'+str(t), data = np.frombuffer(W_) );
+		W_= self.fftshift( W34_GPU.get() );
+		f11.create_dataset('W_real_34/'+str(t), data = np.real(W_) )
+		f11.create_dataset('W_imag_34/'+str(t), data = np.imag(W_) )
 
 		#
 
-		W_= self.fftshift( W41_GPU.get().real.astype(np.float64) );
-		f11.create_dataset('41/'+str(t), data = np.frombuffer(W_) )
+		W_= self.fftshift( W41_GPU.get() );
+		f11.create_dataset('W_real_41/'+str(t), data = np.real(W_) )
+		f11.create_dataset('W_imag_41/'+str(t), data = np.imag(W_) )
 
-		W_= self.fftshift( W42_GPU.get().real.astype(np.float64) );
-		f11.create_dataset('42/'+str(t), data = np.frombuffer(W_) );
+		W_= self.fftshift( W42_GPU.get() );
+		f11.create_dataset('W_real_42/'+str(t), data = np.real(W_) )
+		f11.create_dataset('W_imag_42/'+str(t), data = np.imag(W_) )
 
-		W_= self.fftshift( W43_GPU.get().real.astype(np.float64) );	
-		f11.create_dataset('43/'+str(t), data = np.frombuffer(W_) );
+		W_= self.fftshift( W43_GPU.get() );
+		f11.create_dataset('W_real_43/'+str(t), data = np.real(W_) )
+		f11.create_dataset('W_imag_43/'+str(t), data = np.imag(W_) )
 
-		W_= self.fftshift( W44_GPU.get().real.astype(np.float64) );	
-		f11.create_dataset('44/'+str(t), data = np.frombuffer(W_) );
+		W_= self.fftshift( W44_GPU.get() );
+		f11.create_dataset('W_real_44/'+str(t), data = np.real(W_) )
+		f11.create_dataset('W_imag_44/'+str(t), data = np.imag(W_) )
+
+
+	#--------------------------------------------------------------------
+
+	def Load_Density(self,fileName,n):
+		f11 = h5py.File( fileName ,'r')
+
+		rho = f11[str(n)][...]
+
+		f11.close() 
+
+		return rho
+
+
+	def Load_WignerFunction(self,fileName,n):
+		f11 = h5py.File( fileName ,'r')
+		#W = FILE['/'+str(n)][...]
+		
+		W11  =  f11['W_real_11/'+str(n)][...] + 1j*f11['W_imag_11/'+str(n)][...]
+		W12  =  f11['W_real_12/'+str(n)][...] + 1j*f11['W_imag_12/'+str(n)][...]
+		W13  =  f11['W_real_13/'+str(n)][...] + 1j*f11['W_imag_13/'+str(n)][...]
+		W14  =  f11['W_real_14/'+str(n)][...] + 1j*f11['W_imag_14/'+str(n)][...]
+
+		W21  =  f11['W_real_21/'+str(n)][...] + 1j*f11['W_imag_21/'+str(n)][...]
+		W22  =  f11['W_real_22/'+str(n)][...] + 1j*f11['W_imag_22/'+str(n)][...]
+		W23  =  f11['W_real_23/'+str(n)][...] + 1j*f11['W_imag_23/'+str(n)][...]
+		W24  =  f11['W_real_24/'+str(n)][...] + 1j*f11['W_imag_24/'+str(n)][...]
+
+		W31  =  f11['W_real_31/'+str(n)][...] + 1j*f11['W_imag_31/'+str(n)][...]
+		W32  =  f11['W_real_32/'+str(n)][...] + 1j*f11['W_imag_32/'+str(n)][...]
+		W33  =  f11['W_real_33/'+str(n)][...] + 1j*f11['W_imag_33/'+str(n)][...]
+		W34  =  f11['W_real_34/'+str(n)][...] + 1j*f11['W_imag_34/'+str(n)][...]
+
+		W41  =  f11['W_real_41/'+str(n)][...] + 1j*f11['W_imag_41/'+str(n)][...]
+		W42  =  f11['W_real_42/'+str(n)][...] + 1j*f11['W_imag_42/'+str(n)][...]
+		W43  =  f11['W_real_43/'+str(n)][...] + 1j*f11['W_imag_43/'+str(n)][...]
+		W44  =  f11['W_real_44/'+str(n)][...] + 1j*f11['W_imag_44/'+str(n)][...]
+
+		f11.close() 
+
+		return np.array( [[W11,W12,W13,W14],[W21,W22,W23,W24],[W31,W32,W33,W34],[W41,W42,W43,W44]] )  
 
 	#....................................................................
 	#           Caldeira Legget Damping
@@ -3192,7 +3342,8 @@ class GPU_WignerDirac2D_4x4:
 		P1_Alpha_1_Average          = []
 		X1_Alpha_1_Average          = []
 
-		
+		negativity   = []
+		transmission = []
 
 		timeRange        = np.array([0.])
 
@@ -3259,6 +3410,20 @@ class GPU_WignerDirac2D_4x4:
 						     	        W31_GPU, W32_GPU, W33_GPU, W34_GPU,
 						     	        W41_GPU, W42_GPU, W43_GPU, W44_GPU  ) )
 
+
+				self.pickup_negatives_Function(_W11_GPU,
+								W11_GPU, W22_GPU, W33_GPU, W44_GPU,
+								block=self.blockCUDA, grid=self.gridCUDA)
+				negativity.append(
+						self.dX*self.dP*np.real(gpuarray.sum(_W11_GPU).get()))				
+								
+
+				self.transmission_Function(_W11_GPU,
+								W11_GPU, W22_GPU, W33_GPU, W44_GPU,
+								block=self.blockCUDA, grid=self.gridCUDA)
+				transmission.append(
+						self.dX*self.dP*np.real(gpuarray.sum(_W11_GPU).get()))	
+
 				#................ Energy ................................................
 
 				if self.computeEnergy == True:			
@@ -3298,7 +3463,7 @@ class GPU_WignerDirac2D_4x4:
 
 					antiParticle_population.append(   antiParticleNorm  )
 
-					particleNorm = self.ParticlePopulation(
+					"""particleNorm = self.ParticlePopulation(
 					_W11_GPU, _W12_GPU, _W13_GPU, _W14_GPU,
 					_W21_GPU, _W22_GPU, _W23_GPU, _W24_GPU,
 					_W31_GPU, _W32_GPU, _W33_GPU, _W34_GPU,
@@ -3308,7 +3473,7 @@ class GPU_WignerDirac2D_4x4:
 					 W31_GPU,  W32_GPU,  W33_GPU,  W34_GPU,
 					 W41_GPU,  W42_GPU,  W43_GPU,  W44_GPU)
 
-					particle_population.append(   particleNorm  )
+					particle_population.append(   particleNorm  )"""
 
 				#############################################################
 				#
@@ -3500,8 +3665,8 @@ class GPU_WignerDirac2D_4x4:
 		self.antiParticle_population   = np.array(antiParticle_population)
 		f11['antiParticle_population'] = self.antiParticle_population
 
-		self.particle_population   = np.array(particle_population)
-		f11['particle_population'] = self.particle_population
+		#self.particle_population   = np.array(particle_population)
+		#f11['particle_population'] = self.particle_population
 		
 		self.Dirac_energy = np.array(Dirac_energy).real
 		f11['Dirac_energy'] = np.array(Dirac_energy)
@@ -3542,6 +3707,12 @@ class GPU_WignerDirac2D_4x4:
 
 		self.P1_D_1_Potential_0_Average   = np.array( P1_D_1_Potential_0_Average ).real
 		f11['P1_D_1_Potential_0_Average'] = self.P1_D_1_Potential_0_Average
+
+		self.negativity = np.array(negativity).real
+		f11['Negativity'] = self.negativity
+
+		self.transmission = np.array(transmission).real
+		f11['transmission'] = self.transmission
 
 		#.............................................................................
 
