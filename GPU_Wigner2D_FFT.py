@@ -878,6 +878,9 @@ class Propagator_Base :
 		self.expPLambdaFunction = SourceModule(\
 					expPLambda_source%(self.CUDA_constants),arch="sm_20").get_function("Kernel")
 
+		#print expPLambdaKinetic_source%(
+		#			self.CUDA_constants,self.kinematicString)
+
 		self.expPLambdaKineticFunction = SourceModule(\
 					expPLambdaKinetic_source%(
 					self.CUDA_constants,self.kinematicString),arch="sm_20").get_function("Kernel")		
@@ -1713,7 +1716,8 @@ class GPU_Wigner2D_FFT(Propagator_Base):
 	"""
 
 	def __init__(self,X_gridDIM,P_gridDIM,X_amplitude,P_amplitude, hBar ,mass,
-			D_Theta, D_Lambda, gammaDamping, potentialString, dPotentialString, normalization = 'Wigner'):
+			D_Theta, D_Lambda, gammaDamping, potentialString, dPotentialString,kinematicString,
+			normalization = 'Wigner'):
 		"""
 		
 		"""
@@ -1724,6 +1728,7 @@ class GPU_Wigner2D_FFT(Propagator_Base):
 
 		self.potentialString   =  potentialString
 		self.dPotentialString  =  dPotentialString
+		self.kinematicString   =  kinematicString
 
 		self.SetPhaseSpaceBox2D(X_gridDIM, P_gridDIM, X_amplitude, P_amplitude)		
 		self.hBar = hBar
@@ -2224,6 +2229,9 @@ class GPU_Wigner2D_ODM2(Propagator_Base):
 
 		return  0
 
+
+
+#>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
 #=====================================================================================================
 #
