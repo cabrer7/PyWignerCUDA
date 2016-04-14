@@ -2274,7 +2274,7 @@ class GPU_WignerDirac2D_4x4:
 
 	#...................................................................................
 
-	def ConstructMajoranaSpinor(self, Psi_real ):
+	def _ConstructMajoranaSpinor(self, Psi_real ):
 		"""
 		returns a spinor in the stanbdard representation from a spinor in the Majorana representation
 		Depreciated
