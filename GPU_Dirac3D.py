@@ -698,33 +698,41 @@ class GPU_Dirac3D:
 		print '  '
 		print '  	Filter Electron routine '
 		print '  '
-                min_Px = np.pi*self.X_gridDIM/(2*self.min_X)
+
+                min_Px = np.pi*self.X_gridDIM/(-2*self.X_amplitude)
 		dPx = 2*np.abs(min_Px)/self.X_gridDIM
 		px_Vector  = fftpack.fftshift ( np.linspace(min_Px, np.abs(min_Px) - dPx, self.X_gridDIM ))
 
-		min_Py = np.pi*self.Y_gridDIM/(2*self.min_Y)
+		min_Py = np.pi*self.Y_gridDIM/(-2*self.Y_amplitude)
 		dPy = 2*np.abs(min_Py)/self.Y_gridDIM
 		py_Vector  = fftpack.fftshift ( np.linspace(min_Py, np.abs(min_Py) - dPy, self.Y_gridDIM ))
 
+		min_Pz = np.pi*self.Z_gridDIM/(-2*self.Z_amplitude)
+		dPz = 2*np.abs(min_Pz)/self.Z_gridDIM
+		pz_Vector  = fftpack.fftshift ( np.linspace(min_Pz, np.abs(min_Pz) - dPz, self.Z_gridDIM ))
 
-		px = px_Vector[np.newaxis,:]
-		py = py_Vector[:,np.newaxis]
 
+		px = px_Vector[np.newaxis,np.newaxis,:]
+		py = py_Vector[np.newaxis,:,np.newaxis]
+		pz = pz_Vector[:,np.newaxis,np.newaxis]
 
-		sqrtp = sign*2*np.sqrt( self.mass*self.mass*self.c**4 + self.c*self.c*px*px + self.c*self.c*py*py )
+		sqrtp = sign*2*np.sqrt( 
+		self.mass*self.mass*self.c**4 + self.c*self.c*px*px + self.c*self.c*py*py + self.c*self.c*pz*pz  )
 		aa = sign*self.mass*self.c*self.c/sqrtp
 		bb = sign*(px/sqrtp - 1j*py/sqrtp)
 		cc = sign*(px/sqrtp + 1j*py/sqrtp)
+		dd = sign*pz/sqrtp
+		#dd = 0.5      - sign*self.mass*self.c*self.c/sqrtp
 	        
-		ElectronProjector = np.matrix([ [0.5+aa , 0.  , 0.  , bb  ],
-						[0. , 0.5+aa  , cc  , 0.  ],
-						[0. , bb  , 0.5-aa  , 0.  ],
-						[cc , 0.  , 0.  , 0.5-aa] ])
+		ElectronProjector = np.matrix([ [0.5+aa , 0.  , dd  , bb  ],
+						[0. , 0.5+aa  , cc  , -dd  ],
+						[dd , bb  , 0.5-aa  , 0.  ],
+						[cc , -dd  , 0.  , 0.5-aa] ])
 
-		psi1_fft = fftpack.fft2( self.Psi1_init   ) 
-		psi2_fft = fftpack.fft2( self.Psi2_init   ) 
-		psi3_fft = fftpack.fft2( self.Psi3_init   ) 
-		psi4_fft = fftpack.fft2( self.Psi4_init   ) 		
+		psi1_fft = fftpack.fftn( self.Psi_init[0]  ) 
+		psi2_fft = fftpack.fftn( self.Psi_init[1]  ) 
+		psi3_fft = fftpack.fftn( self.Psi_init[2]  ) 
+		psi4_fft = fftpack.fftn( self.Psi_init[3]  ) 		
 		
 		psi1_fft_electron = ElectronProjector[0,0]*psi1_fft + ElectronProjector[0,1]*psi2_fft +\
 		ElectronProjector[0,2]*psi3_fft + ElectronProjector[0,3]*psi4_fft	
@@ -738,26 +746,70 @@ class GPU_Dirac3D:
                 psi4_fft_electron = ElectronProjector[3,0]*psi1_fft + ElectronProjector[3,1]*psi2_fft +\
 		ElectronProjector[3,2]*psi3_fft + ElectronProjector[3,3]*psi4_fft
 
-                self.Psi1_init  = fftpack.ifft2( psi1_fft_electron   ) 
-		self.Psi2_init  = fftpack.ifft2( psi2_fft_electron   ) 
-		self.Psi3_init  = fftpack.ifft2( psi3_fft_electron   ) 
-		self.Psi4_init  = fftpack.ifft2( psi4_fft_electron   ) 					
+                self.Psi1_init  = fftpack.ifftn( psi1_fft_electron   ) 
+		self.Psi2_init  = fftpack.ifftn( psi2_fft_electron   ) 
+		self.Psi3_init  = fftpack.ifftn( psi3_fft_electron   ) 
+		self.Psi4_init  = fftpack.ifftn( psi4_fft_electron   )
 
+		self.Psi_init = np.array([ self.Psi1_init, self.Psi2_init, self.Psi3_init, self.Psi4_init  ]) 					
 
 	def save_Spinor(self,f1, t, Psi1_GPU,Psi2_GPU,Psi3_GPU,Psi4_GPU):
 		print ' progress ', 100*t/(self.timeSteps+1), '%'
 
 		PsiTemp = Psi1_GPU.get()
-		f1['1/'+str(t)] = PsiTemp
+		f1['1/real/'+str(t)] = np.real( PsiTemp )
+		f1['1/imag/'+str(t)] = np.imag( PsiTemp )
 
 		PsiTemp = Psi2_GPU.get()
-		f1['2/'+str(t)] = PsiTemp
+		f1['2/real/'+str(t)] = np.real( PsiTemp )
+		f1['2/imag/'+str(t)] = np.imag( PsiTemp )
 
 		PsiTemp = Psi3_GPU.get()
-		f1['3/'+str(t)] = PsiTemp
+		f1['3/real/'+str(t)] = np.real( PsiTemp )
+		f1['3/imag/'+str(t)] = np.imag( PsiTemp )
 
 		PsiTemp = Psi4_GPU.get()
-		f1['4/'+str(t)] = PsiTemp
+		f1['4/real/'+str(t)] = np.real( PsiTemp )
+		f1['4/imag/'+str(t)] = np.imag( PsiTemp )
+
+
+	def save_Spinor_SliceYZ(self,f1, t, Psi1_GPU,Psi2_GPU,Psi3_GPU,Psi4_GPU, sliceY, sliceZ ):
+		print ' progress ', 100*t/(self.timeSteps+1), '%'
+
+		PsiTemp = Psi1_GPU.get()[sliceZ,:,:]
+		f1['z/1/real/'+str(t)] = np.real( PsiTemp )
+		f1['z/1/imag/'+str(t)] = np.imag( PsiTemp )
+
+		PsiTemp = Psi2_GPU.get()[sliceZ,:,:]
+		f1['z/2/real/'+str(t)] = np.real( PsiTemp )
+		f1['z/2/imag/'+str(t)] = np.imag( PsiTemp )
+
+		PsiTemp = Psi3_GPU.get()[sliceZ,:,:]
+		f1['z/3/real/'+str(t)] = np.real( PsiTemp )
+		f1['z/3/imag/'+str(t)] = np.imag( PsiTemp )
+
+		PsiTemp = Psi4_GPU.get()[sliceZ,:,:]
+		f1['z/4/real/'+str(t)] = np.real( PsiTemp )
+		f1['z/4/imag/'+str(t)] = np.imag( PsiTemp )
+
+		#		
+
+		PsiTemp = Psi1_GPU.get()[:,sliceY,:]
+		f1['y/1/real/'+str(t)] = np.real( PsiTemp )
+		f1['y/1/imag/'+str(t)] = np.imag( PsiTemp )
+
+		PsiTemp = Psi2_GPU.get()[:,sliceY,:]
+		f1['y/2/real/'+str(t)] = np.real( PsiTemp )
+		f1['y/2/imag/'+str(t)] = np.imag( PsiTemp )
+
+		PsiTemp = Psi3_GPU.get()[:,sliceY,:]
+		f1['y/3/real/'+str(t)] = np.real( PsiTemp )
+		f1['y/3/imag/'+str(t)] = np.imag( PsiTemp )
+
+		PsiTemp = Psi4_GPU.get()[:,sliceY,:]
+		f1['y/4/real/'+str(t)] = np.real( PsiTemp )
+		f1['y/4/imag/'+str(t)] = np.imag( PsiTemp )
+
 
 	def save_Density(self,f1,t,Psi1_GPU,Psi2_GPU,Psi3_GPU,Psi4_GPU):
 		print ' progress ', 100*t/(self.timeSteps+1), '%'
@@ -947,7 +999,7 @@ class GPU_Dirac3D:
 
 
 		print '--------------------------------------------'
-		print '              Dirac Propagator 2D           '
+		print '              Dirac Propagator 3D           '
 		print '--------------------------------------------'
 		print '  save Mode  =  ',	self.frameSaveMode			
 
@@ -994,9 +1046,11 @@ class GPU_Dirac3D:
 		print '                                                               '
 		print '  '
 
-
 		if self.frameSaveMode=='Spinor':
-			self.save_Spinor(f1, 0 , Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU)
+			#self.save_Spinor(f1, 0 , Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU)
+			self.save_Spinor_SliceYZ(
+					 f1,0,Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU, 0 , 0)
+
 		if self.frameSaveMode=='Density':
 			self.save_Density(f1, 0, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU)
 
@@ -1076,7 +1130,10 @@ class GPU_Dirac3D:
 
 				if t_index % self.skipFrames == 0:
 					if self.frameSaveMode=='Spinor':
-						self.save_Spinor( f1,t_index,Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU)
+						#self.save_Spinor( f1,t_index,Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU)
+						self.save_Spinor_SliceYZ(f1,t_index,
+						Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU, 0 , 0)
+						
 					if self.frameSaveMode=='Density':
 						self.save_Density(f1,t_index,Psi1_GPU,Psi2_GPU,Psi3_GPU,Psi4_GPU)
 
