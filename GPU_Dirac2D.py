@@ -24,7 +24,48 @@ import cufft_wrapper as cuda_fft
 #-------------------------------------------------------------------------------
 
 
+Potential_0_Average_source = """
+#include <pycuda-complex.hpp>
+#include<math.h>
+#define _USE_MATH_DEFINES
 
+%s; // Constants 
+
+__device__  double Potential0(double t, double x, double y)
+{
+    return %s ;
+}
+
+//............................................................................................................
+
+__global__ void Kernel( pycuda::complex<double>* preExpectationValue, 
+pycuda::complex<double>* Psi1,  pycuda::complex<double>* Psi2,  pycuda::complex<double>* Psi3,  pycuda::complex<double>* Psi4,
+double t)
+{
+
+  const int DIM_X = blockDim.x;
+  const int DIM_Y = gridDim.x;
+
+  int j  =       (threadIdx.x + DIM_X/2)%%DIM_X;
+  int i  =       (blockIdx.x  + DIM_Y/2)%%DIM_Y;
+
+  double x = dX*(j - DIM_X/2);
+  double y = dY*(i - DIM_Y/2);
+
+  const int indexTotal = threadIdx.x +  DIM_X * blockIdx.x ; 
+
+  double out;
+
+  out =  Potential0( t, x, y)* pow( abs( Psi1[indexTotal] ) , 2 );
+  out += Potential0( t, x, y)* pow( abs( Psi2[indexTotal] ) , 2 );
+  out += Potential0( t, x, y)* pow( abs( Psi3[indexTotal] ) , 2 );
+  out += Potential0( t, x, y)* pow( abs( Psi4[indexTotal] ) , 2 );
+
+  preExpectationValue[indexTotal] = out;
+
+}
+
+"""
 
 
 
@@ -89,7 +130,7 @@ DiracPropagatorA_source = """
 #include<math.h>
 #define _USE_MATH_DEFINES
 
-%s // Define the essential constants {mass, c, dt, min_x, min_y, ... } . Variables _a_ and _b_ are reserved
+%s // Define the essential constants 
 
 // The vector potential must be supplied with UP indices and: eA
 
@@ -297,11 +338,11 @@ class GPU_Dirac2D:
 
 		Px_amplitude = np.pi/self.dX
 		self.dPx     = 2*Px_amplitude/self.X_gridDIM
-		Px_range     = np.linspace( Px_amplitude, Px_amplitude - self.dPx, self.X_gridDIM )
+		Px_range     = np.linspace( -Px_amplitude, Px_amplitude - self.dPx, self.X_gridDIM )
 
 		Py_amplitude = np.pi/self.dY
 		self.dPy     = 2*Py_amplitude/self.Y_gridDIM
-		Py_range     = np.linspace( Py_amplitude, Py_amplitude - self.dPy, self.Y_gridDIM )
+		Py_range     = np.linspace( -Py_amplitude, Py_amplitude - self.dPy, self.Y_gridDIM )
 
 		self.Px = fftpack.fftshift(Px_range)[np.newaxis,:]
 		self.Py = fftpack.fftshift(Py_range)[:,np.newaxis]
@@ -338,10 +379,19 @@ class GPU_Dirac2D:
 					self.Potential_2_String, 
 					self.Potential_3_String),arch="sm_20").get_function( "DiracPropagatorA_Kernel" )
 
+		self.Potential_0_Average_Function = \
+			SourceModule( Potential_0_Average_source%(
+			self.CUDA_constants,self.Potential_0_String) ).get_function("Kernel" )
+
+
 		self.DiracAbsorbBoundary_xy  =  \
 		SourceModule(BaseCUDAsource_AbsorbBoundary_xy,arch="sm_20").get_function( "AbsorbBoundary_Kernel" )
 
+		#...........................FFT PLAN.................................................
+
 		self.plan_Z2Z_2D = cuda_fft.Plan_Z2Z(  (self.X_gridDIM,self.Y_gridDIM)  )
+
+
 
 	def Fourier_X_To_P_GPU(self,W_out_GPU):
 		cuda_fft.fft_Z2Z(  W_out_GPU, W_out_GPU , self.plan_Z2Z_2D )
@@ -365,28 +415,8 @@ class GPU_Dirac2D:
 #-------------------------------------------------------------------------------------------------------------------
 #           Gaussian PARTICLE spinors 
 
-	def _GaussianSpinor_ParticleUp(self, x_init, p_init, s) :
-		"""
-		x,p: Gaussian center
-		s:   Gaussian standard deviation in x
-		X:   variable
-		"""
-		x ,  y = x_init
-		px, py = p_init		
 
-		rho  = np.exp(1j*self.X*px + 1j*self.Y*py ) 
-		rho *= np.exp(  -0.5*( (self.X - x)/s )**2  -0.5*( (self.Y - y)/s )**2  ) + 0j
-
-		p0  = np.sqrt( px*px + py*py + (self.mass*self.c)**2 )
-		
-		Psi1 =  rho*( p0  + self.mass*self.c ) 
-		Psi2 =  self.X*0j + self.Y*0j   
-		Psi3 =  self.X*0j + self.Y*0j   
-		Psi4 =  rho*(px + 1j*py)	
-		
-		return np.array([Psi1, Psi2, Psi3, Psi4 ])
-
-	def GaussianSpinor_ParticleUp(self, p_init, modulation_Function ):
+	def Spinor_Particle_SpinUp(self, p_init, modulation_Function ):
 		"""
 		
 		"""
@@ -403,58 +433,60 @@ class GPU_Dirac2D:
 		
 		return np.array([Psi1, Psi2, Psi3, Psi4 ])
 
-	def _GaussianSpinor_ParticleDown(self,x,px,s,X) :
+	def Spinor_Particle_SpinDown(self, p_init, modulation_Function ):
 		"""
-		x,p: Gaussian center
-		s:   Gaussian standard deviation in x
-		X:   variable
-		"""
-		rho = np.exp(1j*X*px) * np.exp( -0.5*( (X - x)/s )**2  ) + 0j
-
-		p0  = np.sqrt( px*px + self.mass*self.mass*self.c*self.c )
 		
-		Psi1 =  1j*X*0j  
-		Psi2 =  1j*rho*( p0 + self.mass*self.c ) 
-		Psi3 =  1j*rho*px	  
-		Psi4 =  1j*X*0j	
-		
-		return np.array([Psi1, Psi2, Psi3, Psi4 ])
-
-	#
-	def _GaussianSpinor_AntiParticleDown(self,x,px,s,X) :
 		"""
-		x,p: Gaussian center
-		s:   Gaussian standard deviation in x
-		X:   variable
-		"""
-		rho = np.exp(1j*X*px) * np.exp(  -0.5*( (X - x)/s )**2  ) + 0j
+		px, py = p_init	
 
-		p0  = -np.sqrt( px*px + self.mass*self.mass*self.c*self.c )
+		rho  = np.exp(1j*self.X*px + 1j*self.Y*py )*modulation_Function( self.X , self.Y ) 
+
+		p0  = np.sqrt( px*px + py*py + (self.mass*self.c)**2 )
 		
-		Psi1 =  -1j*X*0j 
-		Psi2 =  -1j*rho*px	
-		Psi3 =  -1j*rho*( p0  - self.mass*self.c ) 
-		Psi4 =  -1j*X*0j 	
+		Psi1 =  rho*0.
+		Psi2 =  rho*( p0  + self.mass*self.c )  
+		Psi3 =  rho*( px - 1j*py )
+		Psi4 =  rho*0.
 		
 		return np.array([Psi1, Psi2, Psi3, Psi4 ])
 
 
-	def _GaussianSpinor_AntiParticleUp(self,x,px,s,X) :
+	def Spinor_AntiParticle_SpinDown(self, p_init, modulation_Function ):
 		"""
-		x,p: Gaussian center
-		s:   Gaussian standard deviation in x
-		X:   variable
+		
 		"""
-		rho = np.exp(1j*X*px) * np.exp(  -0.5*( (X - x)/s )**2  ) + 0j
+		px, py = p_init	
 
-		p0  = -np.sqrt( px*px + self.mass*self.mass*self.c*self.c )
+		rho  = np.exp(1j*self.X*px + 1j*self.Y*py )*modulation_Function( self.X , self.Y ) 
+
+		p0  = -np.sqrt( px*px + py*py + (self.mass*self.c)**2 )
 		
-		Psi1 =  -1j*rho*px 
-		Psi2 =  -1j*X*0j 	
-		Psi3 =  -1j*X*0j 	
-		Psi4 =  -1j*rho*( p0  - self.mass*self.c ) 
+		Psi1 =  rho*0.
+		Psi2 =  rho*( px + 1j*py )	 
+		Psi3 =  rho*( p0  - self.mass*self.c ) 
+		Psi4 =  rho*0.	
 		
-		return np.array([Psi1, Psi2, Psi3, Psi4 ])		
+		return -1j*np.array([Psi1, Psi2, Psi3, Psi4 ])
+
+
+	def Spinor_AntiParticle_SpinUp(self, p_init, modulation_Function ):
+		"""
+		
+		"""
+		px, py = p_init	
+
+		rho  = np.exp(1j*self.X*px + 1j*self.Y*py )*modulation_Function( self.X , self.Y ) 
+
+		p0  = -np.sqrt( px*px + py*py + (self.mass*self.c)**2 )
+		
+		Psi1 =  rho*( px - 1j*py )	
+		Psi2 =  rho*0.
+		Psi3 =  rho*0.
+		Psi4 =  rho*( p0  - self.mass*self.c ) 
+		
+		return -1j*np.array([Psi1, Psi2, Psi3, Psi4 ])
+
+	#.......................................................................
 
 	def Boost(self, p1,p2):
 		#  Boost matrix in Dirac gamma matrices
@@ -554,7 +586,7 @@ class GPU_Dirac2D:
 
 #.............................................................................................
 
-	def FilterElectrons(self,sign):
+	def _FilterElectrons(self,sign):
  		'''
 		Routine that uses the Fourier transform to filter positrons/electrons
 		Options:
@@ -610,20 +642,82 @@ class GPU_Dirac2D:
 		self.Psi4_init  = fftpack.ifft2( psi4_fft_electron   ) 					
 
 
+
+	def FilterElectrons(self,sign, Psi):
+ 		'''
+		Routine that uses the Fourier transform to filter positrons/electrons
+		Options:
+			sign=1   Leaves electrons
+			sign=-1	 Leaves positrons
+		'''
+		print '  '
+		print '  	Filter Electron routine '
+		print '  '
+
+		px = self.c*self.Px
+		py = self.c*self.Py
+		
+		m = self.mass
+		c= self.c
+
+		energy = np.sqrt(  (m*c**2)**2 + px**2 + py**2 )
+
+		EP_11 = 1. + sign*m*c**2/energy
+		EP_12 = 0.
+		EP_13 = 0.
+		EP_14 = sign*(px - 1j*py)/energy
+		
+		EP_21 = 0.
+		EP_22 = 1. + sign*m*c**2/energy
+		EP_23 = sign*(px + 1j*py)/energy
+		EP_24  = 0.
+
+		EP_31 = 0.
+		EP_32 = sign*(px - 1j*py)/energy
+		EP_33 = 1. - sign*m*c**2/energy
+		EP_34 = 0.
+
+		EP_41 = sign*(px + 1j*py)/energy
+		EP_42 = 0.
+		EP_43 = 0.
+		EP_44 = 1. - sign*m*c**2/energy	
+		
+		#Psi1, Psi2, Psi3, Psi4 = Psi
+
+		psi1_fft = fftpack.fft2( Psi[0]  ) 
+		psi2_fft = fftpack.fft2( Psi[1]  ) 
+		psi3_fft = fftpack.fft2( Psi[2]  ) 
+		psi4_fft = fftpack.fft2( Psi[3]  ) 		
+		
+		psi1_fft_electron = EP_11*psi1_fft + EP_12*psi2_fft + EP_13*psi3_fft + EP_14*psi4_fft
+		psi2_fft_electron = EP_21*psi1_fft + EP_22*psi2_fft + EP_23*psi3_fft + EP_24*psi4_fft		
+		psi3_fft_electron = EP_31*psi1_fft + EP_32*psi2_fft + EP_33*psi3_fft + EP_34*psi4_fft
+		psi4_fft_electron = EP_41*psi1_fft + EP_42*psi2_fft + EP_43*psi3_fft + EP_44*psi4_fft
+						
+		return np.array([ fftpack.ifft2( psi1_fft_electron   ),
+				  fftpack.ifft2( psi2_fft_electron   ),
+	   			  fftpack.ifft2( psi3_fft_electron   ),
+				  fftpack.ifft2( psi4_fft_electron   )  ])
+
+
 	def save_Spinor(self,f1, t, Psi1_GPU,Psi2_GPU,Psi3_GPU,Psi4_GPU):
 		print ' progress ', 100*t/(self.timeSteps+1), '%'
 
 		PsiTemp = Psi1_GPU.get()
-		f1['1/'+str(t)] = PsiTemp
+		f1['1/real/'+str(t)] = PsiTemp.real
+		f1['1/imag/'+str(t)] = PsiTemp.imag
 
 		PsiTemp = Psi2_GPU.get()
-		f1['2/'+str(t)] = PsiTemp
+		f1['2/real/'+str(t)] = PsiTemp.real
+		f1['2/imag/'+str(t)] = PsiTemp.imag
 
 		PsiTemp = Psi3_GPU.get()
-		f1['3/'+str(t)] = PsiTemp
+		f1['3/real/'+str(t)] = PsiTemp.real
+		f1['3/imag/'+str(t)] = PsiTemp.imag
 
 		PsiTemp = Psi4_GPU.get()
-		f1['4/'+str(t)] = PsiTemp
+		f1['4/real/'+str(t)] = PsiTemp.real
+		f1['4/imag/'+str(t)] = PsiTemp.imag
 
 	def save_Density(self,f1,t,Psi1_GPU,Psi2_GPU,Psi3_GPU,Psi4_GPU):
 		print ' progress ', 100*t/(self.timeSteps+1), '%'
@@ -661,10 +755,10 @@ class GPU_Dirac2D:
 		else :
 			FILE = h5py.File(fileName)
 
-		psi1 = FILE['1/'+str(n)][...]
-		psi2 = FILE['2/'+str(n)][...]
-		psi3 = FILE['3/'+str(n)][...]
-		psi4 = FILE['4/'+str(n)][...]
+		psi1 = FILE['1/real/'+str(n)][...] + 1j*FILE['1/imag/'+str(n)][...]
+		psi2 = FILE['2/real/'+str(n)][...] + 1j*FILE['2/imag/'+str(n)][...]
+		psi3 = FILE['3/real/'+str(n)][...] + 1j*FILE['3/imag/'+str(n)][...]
+		psi4 = FILE['4/real/'+str(n)][...] + 1j*FILE['4/imag/'+str(n)][...]
 
 		FILE.close()
 
@@ -757,13 +851,21 @@ class GPU_Dirac2D:
 
 	#........................................................................
 
-	def Average_Alpha1( self, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU):
+	def _Average_Alpha1( self, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU):
 		average  =  gpuarray.dot(Psi4_GPU,Psi1_GPU.conj()).get()
 		average +=  gpuarray.dot(Psi3_GPU,Psi2_GPU.conj()).get()
 		average +=  gpuarray.dot(Psi2_GPU,Psi3_GPU.conj()).get()
 		average +=  gpuarray.dot(Psi1_GPU,Psi4_GPU.conj()).get()
 
 		average *= self.dX*self.dY
+
+		return average
+
+	def Average_Alpha1( self, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU):
+		average  =  gpuarray.dot( Psi2_GPU, Psi3_GPU.conj() ).get().real
+		average +=  gpuarray.dot( Psi1_GPU, Psi4_GPU.conj() ).get().real
+
+		average *= 2.*self.dX*self.dY
 
 		return average
 
@@ -787,7 +889,84 @@ class GPU_Dirac2D:
 
 		return average
 
+	def Average_KEnergy( self, temp_GPU, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU):
+				
+		energy  = gpuarray.sum( Psi1_GPU*Psi1_GPU.conj() ).get()
+		energy += gpuarray.sum( Psi2_GPU*Psi2_GPU.conj() ).get()
+		energy -= gpuarray.sum( Psi3_GPU*Psi3_GPU.conj() ).get()
+		energy -= gpuarray.sum( Psi4_GPU*Psi4_GPU.conj() ).get()
 
+		energy *= self.mass*self.c*self.c*self.dPx*self.dPy	
+		
+		#
+		temp_GPU *= 0.
+
+		temp_GPU += Psi4_GPU * Psi1_GPU.conj()
+		temp_GPU += Psi1_GPU * Psi4_GPU.conj()
+		temp_GPU += Psi3_GPU * Psi2_GPU.conj()
+		temp_GPU += Psi2_GPU * Psi3_GPU.conj()
+	
+		temp_GPU *= self.Px_GPU
+		#temp_GPU *= self.c
+
+		energy += gpuarray.sum( temp_GPU ).get()*self.dPx*self.dPy*self.c
+		#
+		temp_GPU *= 0.
+
+		temp_GPU += Psi4_GPU * Psi1_GPU.conj()
+		temp_GPU -= Psi1_GPU * Psi4_GPU.conj()
+		temp_GPU -= Psi3_GPU * Psi2_GPU.conj()
+		temp_GPU += Psi2_GPU * Psi3_GPU.conj()
+
+		temp_GPU *= self.Py_GPU
+		#temp_GPU *= -1j
+
+		energy += gpuarray.sum( temp_GPU ).get()*self.dPx*self.dPy*self.c*(-1j)
+
+		return energy
+
+
+	def Potential_0_Average(self, temp_GPU, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU ,t):
+
+		self.Potential_0_Average_Function( temp_GPU, 
+			 Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU, t , block=self.blockCUDA, grid=self.gridCUDA  )
+
+		return   self.dX*self.dY * gpuarray.sum(temp_GPU).get()	
+
+	def Norm_X_GPU( self, Psi1, Psi2, Psi3, Psi4):
+		norm  = gpuarray.sum( Psi1.__abs__()**2  ).get()
+		norm += gpuarray.sum( Psi2.__abs__()**2  ).get()
+		norm += gpuarray.sum( Psi3.__abs__()**2  ).get()
+		norm += gpuarray.sum( Psi4.__abs__()**2  ).get()
+
+		norm = np.sqrt(norm*self.dX * self.dY )	
+		
+		return norm
+
+	def Norm_P_GPU( self, Psi1, Psi2, Psi3, Psi4):
+		norm  = gpuarray.sum( Psi1.__abs__()**2  ).get()
+		norm += gpuarray.sum( Psi2.__abs__()**2  ).get()
+		norm += gpuarray.sum( Psi3.__abs__()**2  ).get()
+		norm += gpuarray.sum( Psi4.__abs__()**2  ).get()
+
+		norm = np.sqrt(norm*self.dPx * self.dPy )	
+		
+		return norm
+
+
+	def Normalize_X_GPU( self, Psi1, Psi2, Psi3, Psi4):
+		norm = self.Norm_X_GPU(Psi1, Psi2, Psi3, Psi4)
+		Psi1 /= norm
+		Psi2 /= norm
+		Psi3 /= norm
+		Psi4 /= norm
+
+	def Normalize_P_GPU( self, Psi1, Psi2, Psi3, Psi4):
+		norm = self.Norm_P_GPU(Psi1, Psi2, Psi3, Psi4)
+		Psi1 /= norm
+		Psi2 /= norm
+		Psi3 /= norm
+		Psi4 /= norm
 
 	#.....................................................................
 
@@ -810,8 +989,10 @@ class GPU_Dirac2D:
 		f1['x_gridDIM'] = self.X_gridDIM
 		f1['y_gridDIM'] = self.Y_gridDIM
 
-		f1['x_min'] = self.min_X
-		f1['y_min'] = self.min_Y
+		#f1['x_min'] = self.min_X
+		#f1['y_min'] = self.min_Y
+		f1['x_amplitude'] = self.X_amplitude
+		f1['y_amplitude'] = self.Y_amplitude
 
 		#  Redundant information on dx dy dz       
 		f1['dx'] = self.dX
@@ -853,8 +1034,8 @@ class GPU_Dirac2D:
 
 		#  ............................... Main LOOP .....................................
  
-		blockCUDA = (self.X_gridDIM,1,1)
-		gridCUDA  = (self.Y_gridDIM,1)
+		self.blockCUDA = (self.X_gridDIM,1,1)
+		self.gridCUDA  = (self.Y_gridDIM,1)
 
 		timeRange = range(1, self.timeSteps+1)
 
@@ -866,11 +1047,16 @@ class GPU_Dirac2D:
 		Alpha2_average  = []
 		Beta_average    = []
 		
+		KEnergy_average = []
+		Potential_0_average = [] 	
+
+		self.Normalize_X_GPU( Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU)
 
 		for t_index in timeRange:
 
 				t_GPU = np.float64(self.dt * t_index )
-				
+							
+
 				X_average.append( self.Average_X( Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU) )
 				Y_average.append( self.Average_Y( Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU) )
 
@@ -878,14 +1064,22 @@ class GPU_Dirac2D:
 				Alpha2_average.append( self.Average_Alpha2( Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU)  )
 				Beta_average.append(   self.Average_Beta(   Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU)  )
 
+				Potential_0_average.append( 
+					self.Potential_0_Average(  _Psi1_GPU, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU ,t_GPU)  )	
+
+
 				self.Fourier_4_X_To_P_GPU( Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU)
 
 				#..................................................
 				#          Kinetic 
 				#..................................................
+				self.Normalize_P_GPU( Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU)
+
+				KEnergy_average.append(
+					self.Average_KEnergy( _Psi1_GPU, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU) )
 
 				self.DiracPropagatorK(  Psi1_GPU,  Psi2_GPU,  Psi3_GPU,  Psi4_GPU,
-					 		block=blockCUDA, grid=gridCUDA )
+					 		block=self.blockCUDA, grid=self.gridCUDA )
 
 				self.Fourier_4_P_To_X_GPU( Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU)
 
@@ -895,18 +1089,18 @@ class GPU_Dirac2D:
 				#..............................................
 
 				self.DiracPropagatorA( Psi1_GPU,  Psi2_GPU,  Psi3_GPU,  Psi4_GPU,
-							   t_GPU, block=blockCUDA, grid=gridCUDA )
+							   t_GPU, block=self.blockCUDA, grid=self.gridCUDA )
 				
 				#        Absorbing boundary
 				
 				self.DiracAbsorbBoundary_xy(
 				Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU,
-				block=blockCUDA, grid=gridCUDA )
+				block=self.blockCUDA, grid=self.gridCUDA )
 				
 				#
 				#	Normalization
 				#
-				self.Normalize_GPU( Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU)
+				self.Normalize_X_GPU( Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU)
 				
 				#   Saving files
 
@@ -932,6 +1126,9 @@ class GPU_Dirac2D:
 		self.Alpha1_average = np.array(Alpha1_average).real
 		self.Alpha2_average = np.array(Alpha2_average).real
 		self.Beta_average   = np.array(Beta_average).real 
+
+		self.KEnergy_average     = np.array( KEnergy_average ).real
+		self.Potential_0_average = np.array( Potential_0_average ).real 
 
 		return 0
 
