@@ -24,6 +24,243 @@ import cufft_wrapper as cuda_fft
 
 #-------------------------------------------------------------------------------
 
+K_Energy_Average_source = """
+#include <pycuda-complex.hpp>
+#include<math.h>
+#define _USE_MATH_DEFINES
+
+{CUDAconstants} 
+
+__global__ void Kernel( double *Weight , 
+pycuda::complex<double>* Psi1,  pycuda::complex<double>* Psi2,  pycuda::complex<double>* Psi3,  pycuda::complex<double>* Psi4)
+{{
+
+  const int DIM_X = blockDim.x;
+  const int DIM_Y = gridDim.x;
+  const int DIM_Z = gridDim.y;
+
+  int j  =  (threadIdx.x + DIM_X/2)%DIM_X;
+  int i  =  (blockIdx.x  + DIM_Y/2)%DIM_Y;
+  int k  =  (blockIdx.y  + DIM_Z/2)%DIM_Z;
+
+  double  weight1 , weight2 ;
+
+  const int indexTotal = threadIdx.x +  DIM_X * blockIdx.x + DIM_X*DIM_Y * blockIdx.y; 
+
+  double px = dPx*(j - DIM_X/2);
+  double py = dPy*(i - DIM_Y/2);
+  double pz = dPz*(k - DIM_Z/2);
+
+  weight1   =  pycuda::real<double>( Psi1[indexTotal] * pycuda::conj( Psi1[indexTotal] )  );
+  weight1  +=  pycuda::real<double>( Psi2[indexTotal] * pycuda::conj( Psi2[indexTotal] )  );
+  weight1  -=  pycuda::real<double>( Psi3[indexTotal] * pycuda::conj( Psi3[indexTotal] )  );
+  weight1  -=  pycuda::real<double>( Psi4[indexTotal] * pycuda::conj( Psi4[indexTotal] )  );
+
+  weight1 *= mass*c*c;
+
+  weight2 = weight1;
+  
+  //...............................
+
+  weight1   =  pycuda::real<double>( Psi4[indexTotal] * pycuda::conj( Psi1[indexTotal] )  );
+  weight1  +=  pycuda::real<double>( Psi3[indexTotal] * pycuda::conj( Psi2[indexTotal] )  );
+   
+  weight1 *= 2*c*px;
+  weight2 += weight1;
+  //...............................
+ 
+  weight1   =  pycuda::imag<double>( Psi4[indexTotal] * pycuda::conj( Psi1[indexTotal] )  );
+  weight1  +=  pycuda::imag<double>( Psi2[indexTotal] * pycuda::conj( Psi3[indexTotal] )  );
+   
+  weight1 *= 2*c*py;
+  weight2 += weight1;
+  //...............................
+
+  weight1   =  pycuda::real<double>( Psi3[indexTotal] * pycuda::conj( Psi1[indexTotal] )  );
+  weight1  -=  pycuda::real<double>( Psi4[indexTotal] * pycuda::conj( Psi2[indexTotal] )  );
+   
+  weight1 *= 2*c*pz;
+  weight2 += weight1;
+  
+  Weight[indexTotal] = weight2;
+
+}}
+"""
+
+#
+
+Potential_0_Average_source = """
+#include <pycuda-complex.hpp>
+#include<math.h>
+#define _USE_MATH_DEFINES
+
+{CUDAconstants} 
+
+__device__  double Potential0(double t, double x, double y, double z)
+{{
+    return {A0};
+}}
+
+//............................................................................................................
+
+__global__ void Kernel( double *Weight, 
+pycuda::complex<double>* Psi1,  pycuda::complex<double>* Psi2,  pycuda::complex<double>* Psi3,  pycuda::complex<double>* Psi4,
+double t)
+{{
+
+  const int DIM_X = blockDim.x;
+  const int DIM_Y = gridDim.x;
+  const int DIM_Z = gridDim.y;
+
+  int j  =  (threadIdx.x + DIM_X/2)%DIM_X;
+  int i  =  (blockIdx.x  + DIM_Y/2)%DIM_Y;
+  int k  =  (blockIdx.y  + DIM_Z/2)%DIM_Z;
+
+  //pycuda::complex<double>  _Psi1, _Psi2, _Psi3, _Psi4;
+
+  const int indexTotal = threadIdx.x +  DIM_X * blockIdx.x + DIM_X*DIM_Y * blockIdx.y; 
+
+  double x = dX*(j - DIM_X/2);
+  double y = dY*(i - DIM_Y/2);
+  double z = dZ*(k - DIM_Z/2);
+
+  double out;
+
+  out =  Potential0( t, x, y, z)* pow( abs( Psi1[indexTotal] ) , 2 );
+  out += Potential0( t, x, y, z)* pow( abs( Psi2[indexTotal] ) , 2 );
+  out += Potential0( t, x, y, z)* pow( abs( Psi3[indexTotal] ) , 2 );
+  out += Potential0( t, x, y, z)* pow( abs( Psi4[indexTotal] ) , 2 );
+
+  Weight[indexTotal] = out;
+
+}}
+
+"""
+
+#-------------------------------------------------------------------------------
+
+Average_Px_source = """
+#include <pycuda-complex.hpp>
+#include<math.h>
+#define _USE_MATH_DEFINES
+
+__global__ void Kernel(
+ double *weighted,
+ pycuda::complex<double>  *Psi1, pycuda::complex<double>  *Psi2, 
+ pycuda::complex<double>  *Psi3, pycuda::complex<double>  *Psi4 )
+{{
+
+  {CUDAconstants}
+
+  const int DIM_X = blockDim.x;
+  const int DIM_Y = gridDim.x;
+  const int DIM_Z = gridDim.y;
+
+  int j  =  (threadIdx.x + DIM_X/2)%DIM_X;
+  int i  =  (blockIdx.x  + DIM_Y/2)%DIM_Y;
+  int k  =  (blockIdx.y  + DIM_Z/2)%DIM_Z;
+
+  pycuda::complex<double>  _Psi1, _Psi2, _Psi3, _Psi4;
+
+  const int indexTotal = threadIdx.x +  DIM_X * blockIdx.x + DIM_X*DIM_Y * blockIdx.y; 
+
+  double px = dPx*( j - DIM_X/2 );
+  //double py = dY*( i - DIM_Y/2 );
+  //double pz = dZ*( k - DIM_Z/2 );
+
+  double out;
+  out  =  px * pow( abs(Psi1[indexTotal]) ,2);
+  out +=  px * pow( abs(Psi2[indexTotal]) ,2);
+  out +=  px * pow( abs(Psi3[indexTotal]) ,2);
+  out +=  px * pow( abs(Psi4[indexTotal]) ,2);
+
+  weighted[ indexTotal ] = out;
+	
+}}
+"""
+
+Average_Py_source = """
+#include <pycuda-complex.hpp>
+#include<math.h>
+#define _USE_MATH_DEFINES
+
+__global__ void Kernel(
+ double *weighted,
+ pycuda::complex<double>  *Psi1, pycuda::complex<double>  *Psi2, 
+ pycuda::complex<double>  *Psi3, pycuda::complex<double>  *Psi4 )
+{{
+
+  {CUDAconstants}
+
+  const int DIM_X = blockDim.x;
+  const int DIM_Y = gridDim.x;
+  const int DIM_Z = gridDim.y;
+
+  int j  =  (threadIdx.x + DIM_X/2)%DIM_X;
+  int i  =  (blockIdx.x  + DIM_Y/2)%DIM_Y;
+  int k  =  (blockIdx.y  + DIM_Z/2)%DIM_Z;
+
+  pycuda::complex<double>  _Psi1, _Psi2, _Psi3, _Psi4;
+
+  const int indexTotal = threadIdx.x +  DIM_X * blockIdx.x + DIM_X*DIM_Y * blockIdx.y; 
+
+  //double px = dPx*( j - DIM_X/2 );
+    double py = dPy*( i - DIM_Y/2 );
+  //double pz = dPz*( k - DIM_Z/2 );
+
+  double out;
+  out  =  py * pow( abs(Psi1[indexTotal]) ,2);
+  out +=  py * pow( abs(Psi2[indexTotal]) ,2);
+  out +=  py * pow( abs(Psi3[indexTotal]) ,2);
+  out +=  py * pow( abs(Psi4[indexTotal]) ,2);
+
+  weighted[ indexTotal ] = out;
+	
+}}
+"""
+
+Average_Pz_source = """
+#include <pycuda-complex.hpp>
+#include<math.h>
+#define _USE_MATH_DEFINES
+
+__global__ void Kernel(
+ double *weighted,
+ pycuda::complex<double>  *Psi1, pycuda::complex<double>  *Psi2, 
+ pycuda::complex<double>  *Psi3, pycuda::complex<double>  *Psi4 )
+{{
+
+  {CUDAconstants}
+
+  const int DIM_X = blockDim.x;
+  const int DIM_Y = gridDim.x;
+  const int DIM_Z = gridDim.y;
+
+  int j  =  (threadIdx.x + DIM_X/2)%DIM_X;
+  int i  =  (blockIdx.x  + DIM_Y/2)%DIM_Y;
+  int k  =  (blockIdx.y  + DIM_Z/2)%DIM_Z;
+
+  pycuda::complex<double>  _Psi1, _Psi2, _Psi3, _Psi4;
+
+  const int indexTotal = threadIdx.x +  DIM_X * blockIdx.x + DIM_X*DIM_Y * blockIdx.y; 
+
+  //double px = dPx*( j - DIM_X/2 );
+  //double py = dPy*( i - DIM_Y/2 );
+  double pz = dPz*( k - DIM_Z/2 );
+
+  double out;
+  out  =  pz * pow( abs(Psi1[indexTotal]) ,2);
+  out +=  pz * pow( abs(Psi2[indexTotal]) ,2);
+  out +=  pz * pow( abs(Psi3[indexTotal]) ,2);
+  out +=  pz * pow( abs(Psi4[indexTotal]) ,2);
+
+  weighted[ indexTotal ] = out;
+	
+}}
+"""
+
+#-------------------------------------------------------------------------------
+
 Average_X_source = """
 #include <pycuda-complex.hpp>
 #include<math.h>
@@ -85,7 +322,7 @@ __global__ void Kernel(
   int i  =  (blockIdx.x  + DIM_Y/2)%DIM_Y;
   int k  =  (blockIdx.y  + DIM_Z/2)%DIM_Z;
 
-  pycuda::complex<double>  _Psi1, _Psi2, _Psi3, _Psi4;
+  //pycuda::complex<double>  _Psi1, _Psi2, _Psi3, _Psi4;
 
   const int indexTotal = threadIdx.x +  DIM_X * blockIdx.x + DIM_X*DIM_Y * blockIdx.y; 
 
@@ -174,13 +411,15 @@ __global__ void Kernel(
   double py = dPy*(i - DIM_Y/2);
   double pz = dPz*(k - DIM_Z/2);
 
-  double Energy  =  c*sqrt( px*px + py*py + pz*pz + pow(mass*c,2) );
+  double mass_ = 0.5*mass;
+
+  double Energy  =  c*sqrt( px*px + py*py + pz*pz + pow(mass_*c,2) );
   double phi     =  Energy*dt/hBar; 
 
   pycuda::complex<double> p_plus  = pycuda::complex<double>(  py ,  px );
   pycuda::complex<double> p_minus = pycuda::complex<double>(  py , -px );
 
-  pycuda::complex<double> U11 =  pycuda::complex<double>( cos(phi)  ,  - c*c*mass*sin( phi )/Energy );
+  pycuda::complex<double> U11 =  pycuda::complex<double>( cos(phi)  ,  - c*c*mass_*sin( phi )/Energy );
   pycuda::complex<double> U13 =  pycuda::complex<double>( 0.        ,  - c*pz*sin( phi )/Energy     );
   pycuda::complex<double> U14 = -p_plus*c* sin(phi)/Energy;
   
@@ -192,7 +431,7 @@ __global__ void Kernel(
 
   pycuda::complex<double> U31 =  pycuda::complex<double>( 0.  ,  -c*pz*sin(phi)/Energy   );
   pycuda::complex<double> U32 = -(c*sin(phi)/Energy) * p_plus; 
-  pycuda::complex<double> U33 =  pycuda::complex<double>( cos(phi)   ,  c*c*mass*sin( phi )/Energy );
+  pycuda::complex<double> U33 =  pycuda::complex<double>( cos(phi)   ,  c*c*mass_*sin( phi )/Energy );
 
   pycuda::complex<double> U41 = p_minus * (c*sin(phi)/Energy);
   pycuda::complex<double> U42 = pycuda::complex<double>( 0.  ,  c*pz*sin(phi)/Energy   );
@@ -200,7 +439,7 @@ __global__ void Kernel(
 
 
   _Psi1 = U11*Psi1[indexTotal]                          +  U13*Psi3[indexTotal]  +  U14*Psi4[indexTotal];
-  _Psi2 =                         U11*Psi2[indexTotal]  +  U23*Psi3[indexTotal]  +  U24*Psi4[indexTotal];
+  _Psi2 =                         U22*Psi2[indexTotal]  +  U23*Psi3[indexTotal]  +  U24*Psi4[indexTotal];
   _Psi3 = U31*Psi1[indexTotal]  + U32*Psi2[indexTotal]  +  U33*Psi3[indexTotal]                         ;
   _Psi4 = U41*Psi1[indexTotal]  + U42*Psi2[indexTotal]                           +  U44*Psi4[indexTotal];
 
@@ -224,28 +463,28 @@ DiracPropagatorA_source = """
 #define _USE_MATH_DEFINES
 
 
-__device__  double A0(double t, double x, double y)
+__device__  double A0(double t, double x, double y, double z)
 {{
     return {A0};
 }}
-__device__  double A1(double t, double x, double y)
+__device__  double A1(double t, double x, double y, double z)
 {{
    return {A1};
 }}
 
-__device__  double A2(double t, double x, double y)
+__device__  double A2(double t, double x, double y, double z)
 {{
    return {A2};
 }}
 
-__device__  double A3(double t, double x, double y)
+__device__  double A3(double t, double x, double y, double z)
 {{
    return {A3};
 }}
 
-__device__ double VectorPotentialSquareSum(double t, double x, double y)
+__device__ double VectorPotentialSquareSum(double t, double x, double y, double z)
 {{
- return pow( A1(t,x,y), 2.) + pow( A2(t,x,y), 2.) + pow( A3(t,x,y), 2.);
+ return pow( A1(t,x,y,z), 2.) + pow( A2(t,x,y,z), 2.) + pow( A3(t,x,y,z), 2.);
 }}
 
 //-------------------------------------------------------------------------------------------------------------
@@ -257,48 +496,57 @@ __global__ void DiracPropagatorA_Kernel(
 
   const int DIM_X = blockDim.x;
   const int DIM_Y = gridDim.x;
+  const int DIM_Z = gridDim.y;
 
-  int j  =       (threadIdx.x + DIM_X/2)%DIM_X;
-  int i  =       (blockIdx.x  + DIM_Y/2)%DIM_Y;
+  int j  =  (threadIdx.x + DIM_X/2)%DIM_X;
+  int i  =  (blockIdx.x  + DIM_Y/2)%DIM_Y;
+  int k  =  (blockIdx.y  + DIM_Z/2)%DIM_Z;
 
-  const int indexTotal = threadIdx.x +  DIM_X * blockIdx.x ; 
+  const int indexTotal = threadIdx.x +  DIM_X * blockIdx.x + DIM_X*DIM_Y * blockIdx.y; 
+
   double x = dX*(j - DIM_X/2);
   double y = dY*(i - DIM_Y/2);
+  double z = dZ*(k - DIM_Z/2);
 
   pycuda::complex<double>  _Psi1, _Psi2, _Psi3, _Psi4;
 
-  double F;
-  F = sqrt( pow(mass*c*c,2.) + c*VectorPotentialSquareSum(t,x,y)  );	
- 
-  pycuda::complex<double> expV0 = exp(  pycuda::complex<double>(0. ,-dt*A0(t,x,y)) );	
+  double F,omega;
+  double mass_ = 0.5*mass;
+	
+  F = sqrt( pow(mass_*c*c,2.) + VectorPotentialSquareSum(t,x,y,z)  );	
+  omega = F/hBar; 
+  pycuda::complex<double> iA_plus  = pycuda::complex<double>( -A2(t,x,y,z) , A1(t,x,y,z) );
+  pycuda::complex<double> iA_minus = pycuda::complex<double>(  A2(t,x,y,z) , A1(t,x,y,z) );
 
+  pycuda::complex<double> expV0 = exp(  pycuda::complex<double>(0. ,-dt*A0(t,x,y,z)) );	
 
-  pycuda::complex<double> U11 = pycuda::complex<double>( cos(dt*F) ,  -mass*c*c*sin(dt*F)/F );
+  pycuda::complex<double> U11 = pycuda::complex<double>( cos(dt*omega) ,  -mass_*c*c*sin(dt*omega)/F );
   pycuda::complex<double> U22 = U11;
 
 
-  pycuda::complex<double> U33 = pycuda::complex<double>( cos(dt*F) ,  mass*c*c*sin(dt*F)/F );	
+  pycuda::complex<double> U33 = pycuda::complex<double>( cos(dt*omega) ,  mass_*c*c*sin(dt*omega)/F );	
   pycuda::complex<double> U44 = U33;
 
-  pycuda::complex<double> U31 = pycuda::complex<double>( 0., A3(t,x,y)*sin(dt*F)/F );
-  pycuda::complex<double> U41 = pycuda::complex<double>( -A2(t,x,y)*sin(dt*F)/F , A1(t,x,y)*sin(dt*F)/F );
+  pycuda::complex<double> U13 = pycuda::complex<double>( 0. , A3(t,x,y,z)*sin(dt*omega)/F );
+  pycuda::complex<double> U14 = iA_minus*sin(dt*omega)/F;
   
-  pycuda::complex<double> U32 = pycuda::complex<double>( A2(t,x,y)*sin(dt*F)/F , A1(t,x,y)*sin(dt*F)/F );
-  pycuda::complex<double> U42 = pycuda::complex<double>( 0., -A3(t,x,y)*sin(dt*F)/F );
+  pycuda::complex<double> U23 =  iA_plus*sin(dt*omega)/F;
+  pycuda::complex<double> U24 =  pycuda::complex<double>( 0. , -A3(t,x,y,z)*sin(dt*omega)/F );
 
-  pycuda::complex<double> U13 = U31;
-  pycuda::complex<double> U14 = U32;
-  pycuda::complex<double> U23 = U41;
-  pycuda::complex<double> U24 = U42;
- 
+  pycuda::complex<double> U31 = pycuda::complex<double>( 0. , A3(t,x,y,z)*sin(dt*omega)/F );
+  pycuda::complex<double> U32 = iA_minus*sin(dt*omega)/F;
 
-  _Psi1 = expV0*( U11*Psi1[indexTotal] + U13*Psi3[indexTotal] + U14*Psi4[indexTotal] );
+  pycuda::complex<double> U41 = iA_plus*sin(dt*omega)/F;
+  pycuda::complex<double> U42 = pycuda::complex<double>( 0. , -A3(t,x,y,z)*sin(dt*omega)/F );
+  
 
-  _Psi2 = expV0*( U22*Psi2[indexTotal] + U23*Psi3[indexTotal] + U24*Psi4[indexTotal] );	
+  _Psi1 = expV0*( U11*Psi1[indexTotal]                        + U13*Psi3[indexTotal] + U14*Psi4[indexTotal] );
 
-  _Psi3 = expV0*( U31*Psi1[indexTotal] + U32*Psi2[indexTotal] + U33*Psi3[indexTotal] );
+  _Psi2 = expV0*(                        U22*Psi2[indexTotal] + U23*Psi3[indexTotal] + U24*Psi4[indexTotal] );	
 
-  _Psi4 = expV0*( U41*Psi1[indexTotal] + U42*Psi2[indexTotal] + U44*Psi4[indexTotal] );
+  _Psi3 = expV0*( U31*Psi1[indexTotal] + U32*Psi2[indexTotal] + U33*Psi3[indexTotal]                        );
+
+  _Psi4 = expV0*( U41*Psi1[indexTotal] + U42*Psi2[indexTotal]                        + U44*Psi4[indexTotal] );
 
   Psi1[indexTotal] = _Psi1;
   Psi2[indexTotal] = _Psi2;
@@ -458,27 +706,35 @@ class GPU_Dirac3D:
 		self.CUDA_constants = 	self.CUDA_constants_essential #+ self.CUDA_constants_additional	
 
 		#................ CUDA Kernels ...........................................................
-
-		"""self.code = DiracPropagatorA_source.format(
-					CUDAconstants=self.CUDA_constants,
-					A0=self.Potential_0_String, 
- 					A1=self.Potential_1_String, 
-					A2=self.Potential_2_String, 
-					A3=self.Potential_3_String)"""
 		
 		DiracPropagatorK_source_final = DiracPropagatorK_source.format(CUDAconstants=self.CUDA_constants)
 		self.DiracPropagatorK = SourceModule( DiracPropagatorK_source_final , arch="sm_20" ).get_function("Kernel")
 
+		self.K_Energy_Average_GPU = SourceModule( 
+			K_Energy_Average_source.format(CUDAconstants=self.CUDA_constants) ).get_function("Kernel")
 
-		self.Average_X_Function = SourceModule( 
+
+		self.Average_X_GPU = SourceModule( 
 			Average_X_source.format(CUDAconstants=self.CUDA_constants)  ).get_function("Kernel")
 
-		self.Average_Y_Function = SourceModule( 
+		self.Average_Y_GPU = SourceModule( 
 			Average_Y_source.format(CUDAconstants=self.CUDA_constants)  ).get_function("Kernel")
 
-		self.Average_Z_Function = SourceModule( 
+		self.Average_Z_GPU = SourceModule( 
 			Average_Z_source.format(CUDAconstants=self.CUDA_constants)  ).get_function("Kernel")
 
+		self.Average_Px_GPU = SourceModule( 
+			Average_Px_source.format(CUDAconstants=self.CUDA_constants)  ).get_function("Kernel")
+
+		self.Average_Py_GPU = SourceModule( 
+			Average_Py_source.format(CUDAconstants=self.CUDA_constants)  ).get_function("Kernel")
+
+		self.Average_Pz_GPU = SourceModule( 
+			Average_Pz_source.format(CUDAconstants=self.CUDA_constants)  ).get_function("Kernel")
+
+		self.Potential_0_Average_GPU = SourceModule( 
+			Potential_0_Average_source.format(CUDAconstants=self.CUDA_constants,A0=self.Potential_0_String)  
+			).get_function("Kernel")
 
 		self.DiracPropagatorA  =  \
 		SourceModule( DiracPropagatorA_source.format(
@@ -498,6 +754,7 @@ class GPU_Dirac3D:
 
 	def Fourier_X_To_P_GPU(self,W_out_GPU):
 		cuda_fft.fft_Z2Z(  W_out_GPU, W_out_GPU , self.plan_Z2Z_3D )
+
 
 	def Fourier_P_To_X_GPU(self,W_out_GPU):
 		cuda_fft.ifft_Z2Z( W_out_GPU, W_out_GPU , self.plan_Z2Z_3D )
@@ -895,6 +1152,16 @@ class GPU_Dirac3D:
 		Psi3 /= norm
 		Psi4 /= norm
 
+	def Norm_P_GPU( self, Psi1, Psi2, Psi3, Psi4):
+		norm  = gpuarray.sum( Psi1.__abs__()**2  ).get()
+		norm += gpuarray.sum( Psi2.__abs__()**2  ).get()
+		norm += gpuarray.sum( Psi3.__abs__()**2  ).get()
+		norm += gpuarray.sum( Psi4.__abs__()**2  ).get()
+
+		norm = np.sqrt( norm*self.dPx * self.dPy * self.dPz )
+		
+		return norm
+
 	#........................................................................
 
 	def _Average_X( self, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU):
@@ -908,7 +1175,7 @@ class GPU_Dirac3D:
 
 		return average	
 
-	def Average_Y( self, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU):
+	def _Average_Y( self, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU):
 
 		average  = gpuarray.dot(Psi1_GPU.__abs__()**2,self.Y_GPU).get()
 		average += gpuarray.dot(Psi2_GPU.__abs__()**2,self.Y_GPU).get()
@@ -919,7 +1186,7 @@ class GPU_Dirac3D:
 
 		return average		
 
-	def Average_Px( self, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU):
+	def _Average_Px( self, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU):
 
 		average  = gpuarray.dot(Psi1_GPU.__abs__()**2,self.Px_GPU).get()
 		average += gpuarray.dot(Psi2_GPU.__abs__()**2,self.Px_GPU).get()
@@ -930,7 +1197,7 @@ class GPU_Dirac3D:
 
 		return average	
 
-	def Average_Py( self, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU):
+	def _Average_Py( self, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU):
 
 		average  = gpuarray.dot(Psi1_GPU.__abs__()**2,self.Py_GPU).get()
 		average += gpuarray.dot(Psi2_GPU.__abs__()**2,self.Py_GPU).get()
@@ -1056,8 +1323,8 @@ class GPU_Dirac3D:
 
 		#  ............................... Main LOOP .....................................
  
-		blockCUDA = (self.X_gridDIM,1,1)
-		gridCUDA  = (self.Y_gridDIM,self.Z_gridDIM)
+		self.blockCUDA = (self.X_gridDIM,1,1)
+		self.gridCUDA  = (self.Y_gridDIM,self.Z_gridDIM)
 
 		timeRange = range(1, self.timeSteps+1)
 
@@ -1066,10 +1333,18 @@ class GPU_Dirac3D:
 		X_average       = []
 		Y_average       = []
 		Z_average       = []
+
+		Px_average       = []
+		Py_average       = []
+		Pz_average       = []
+
 		Alpha1_average  = []
 		Alpha2_average  = []
 		Alpha3_average  = []
 		Beta_average    = []
+
+		Potential_0_average = []
+		K_Energy_average = []
 		
 		self.Normalize_GPU( Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU)
 
@@ -1078,16 +1353,16 @@ class GPU_Dirac3D:
 				t_GPU = np.float64(self.dt * t_index )
 
 				# 	Averages				
-				self.Average_X_Function( Weight_GPU, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU,
-				block=blockCUDA, grid=gridCUDA ) 
+				self.Average_X_GPU( Weight_GPU, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU,
+				block=self.blockCUDA, grid=self.gridCUDA ) 
 				X_average.append(  gpuarray.sum(Weight_GPU).get()*self.dX*self.dY*self.dZ   )
 				#
-				self.Average_Y_Function( Weight_GPU, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU,
-				block=blockCUDA, grid=gridCUDA ) 
+				self.Average_Y_GPU( Weight_GPU, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU,
+				block=self.blockCUDA, grid=self.gridCUDA ) 
 				Y_average.append(  gpuarray.sum(Weight_GPU).get()*self.dX*self.dY*self.dZ   )
 				#
-				self.Average_Z_Function( Weight_GPU, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU,
-				block=blockCUDA, grid=gridCUDA ) 
+				self.Average_Z_GPU( Weight_GPU, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU,
+				block=self.blockCUDA, grid=self.gridCUDA ) 
 				Z_average.append(  gpuarray.sum(Weight_GPU).get()*self.dX*self.dY*self.dZ   )
  
 				#
@@ -1096,14 +1371,52 @@ class GPU_Dirac3D:
 				Alpha3_average.append( self.Average_Alpha3( Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU)  )
 				#
 
+				self.Potential_0_Average_GPU( Weight_GPU, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU, t_GPU,
+										block=self.blockCUDA, grid=self.gridCUDA ) 
+
+				Potential_0_average.append(  gpuarray.sum(Weight_GPU).get()*self.dX*self.dY*self.dZ  )
+
+				#======================================================================================
 				self.Fourier_4_X_To_P_GPU( Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU)
+
+				#
+				if self.Compute_Ehrenfest_P == True:	
+					if t_index==1:
+						norm = self.Norm_P_GPU( Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU )
+						print ' norm step 1 = ', norm
+					Psi1_GPU /= norm; Psi2_GPU /= norm;
+					Psi3_GPU /= norm; Psi4_GPU /= norm
+
+					self.Average_Px_GPU( Weight_GPU, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU,
+										block=self.blockCUDA, grid=self.gridCUDA ) 
+					Px_average.append(  gpuarray.sum(Weight_GPU).get()*self.dPx*self.dPy*self.dPz   )
+
+					#
+					self.Average_Py_GPU( Weight_GPU, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU,
+										block=self.blockCUDA, grid=self.gridCUDA ) 
+					Py_average.append(  gpuarray.sum(Weight_GPU).get()*self.dPx*self.dPy*self.dPz   )
+
+					#
+					self.Average_Pz_GPU( Weight_GPU, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU,
+										block=self.blockCUDA, grid=self.gridCUDA ) 
+					Pz_average.append(  gpuarray.sum(Weight_GPU).get()*self.dPx*self.dPy*self.dPz   )
+
+					#			
+					self.K_Energy_Average_GPU( Weight_GPU, Psi1_GPU, Psi2_GPU, Psi3_GPU, Psi4_GPU,
+										block=self.blockCUDA, grid=self.gridCUDA ) 
+
+					K_Energy_average.append(  gpuarray.sum(Weight_GPU).get()*self.dPx*self.dPy*self.dPz  )
+
+					Psi1_GPU *= norm;  Psi2_GPU *= norm
+					Psi3_GPU *= norm;  Psi4_GPU *= norm
+
 
 				#..................................................
 				#          Kinetic Energy 
 				#..................................................
 
 				self.DiracPropagatorK(  Psi1_GPU,  Psi2_GPU,  Psi3_GPU,  Psi4_GPU,
-					 		block=blockCUDA, grid=gridCUDA )
+					 		block=self.blockCUDA, grid=self.gridCUDA )
 
 				#print gpuarray.sum(Psi1_GPU).get()
 
@@ -1114,8 +1427,8 @@ class GPU_Dirac3D:
 				#             Mass potential
 				#..............................................
 
-				#self.DiracPropagatorA( Psi1_GPU,  Psi2_GPU,  Psi3_GPU,  Psi4_GPU,
-				#			   t_GPU, block=blockCUDA, grid=gridCUDA )
+				self.DiracPropagatorA( Psi1_GPU,  Psi2_GPU,  Psi3_GPU,  Psi4_GPU,
+							   t_GPU, block=self.blockCUDA, grid=self.gridCUDA )
 				
 				#        Absorbing boundary
 				
@@ -1153,9 +1466,16 @@ class GPU_Dirac3D:
 		self.Y_average      = np.array(Y_average).real
 		self.Z_average      = np.array(Z_average).real
 
+		self.Px_average     = np.array( Px_average ).real
+		self.Py_average     = np.array( Py_average ).real
+		self.Pz_average     = np.array( Pz_average ).real
+
 		self.Alpha1_average= np.array(Alpha1_average).real
 		self.Alpha2_average= np.array(Alpha2_average).real
 		self.Alpha3_average= np.array(Alpha3_average).real
+
+		self.Potential_0_average = np.array( Potential_0_average ).real
+		self.K_Energy_average = np.array(K_Energy_average)	
 		
 		"""f1['dt'] = self.dt
 		f1['dX'] = self.dX
