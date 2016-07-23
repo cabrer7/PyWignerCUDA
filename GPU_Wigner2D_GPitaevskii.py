@@ -45,7 +45,7 @@ return (Potential(t, x - hBar*theta/2.) - Potential(t, x + hBar*theta/2.))/hBar;
 
 __device__ double Bloch_Potential_XTheta(double t, double x, double theta)
 {{
-return -0.5*(Potential(t, x - hBar*theta/2.) + Potential(t, x + hBar*theta/2.));
+return Potential(t, x - hBar*theta/2.) + Potential(t, x + hBar*theta/2.);
 }}
 
 
@@ -54,7 +54,6 @@ __global__ void Kernel(  double t_GPU, pycuda::complex<double> *B )
 //  x runs on thread-blocks and p runs on the grid
 
     double t = t_GPU;
-    double secondOrderSplitFactor = 0.5;  // 1.0 for first order and 0.5 for second order	
 	
     int X_DIM = blockDim.x*gridDim.x;
     int P_DIM = gridDim.y;
@@ -67,8 +66,8 @@ __global__ void Kernel(  double t_GPU, pycuda::complex<double> *B )
     const double x     =     dx*( j - 0.5*X_DIM  );
     const double theta = dtheta*( i - 0.5*P_DIM  );
 
-    double phase = secondOrderSplitFactor*dt*Potential_XTheta(t, x, theta);
-    double r = exp( - secondOrderSplitFactor*D_Theta*theta*theta*dt  );
+    double phase = 0.5*dt*Potential_XTheta(t, x, theta);
+    double r = exp( - 0.5*D_Theta*theta*theta*dt  );
 	  	
     B[ indexTotal ] *= pycuda::complex<double>(  r*cos(phase)  ,  -r*sin(phase)  );
 
@@ -78,12 +77,11 @@ __global__ void Kernel(  double t_GPU, pycuda::complex<double> *B )
 }}
 
 
-__global__ void Kernel_Bloch(  double t_GPU, pycuda::complex<double> *B )
+__global__ void Kernel_Bloch( double dt_GPU, double t_GPU, pycuda::complex<double> *B )
 {{
 //  x runs on thread-blocks and p runs on the grid
 
-    double t = t_GPU;
-    double secondOrderSplitFactor = 0.5;  // 1.0 for first order and 0.5 for second order	
+    double t  = t_GPU;
 	
     int X_DIM = blockDim.x*gridDim.x;
     int P_DIM = gridDim.y;
@@ -95,15 +93,12 @@ __global__ void Kernel_Bloch(  double t_GPU, pycuda::complex<double> *B )
     	
     const double x     =     dx*( j - 0.5*X_DIM  );
     const double theta = dtheta*( i - 0.5*P_DIM  );
-
-    double phase = secondOrderSplitFactor*dt* Bloch_Potential_XTheta(t, x, theta);
-    double r = exp( - secondOrderSplitFactor*D_Theta*theta*theta*dt  );
 	  	
-    B[ indexTotal ] *= pycuda::complex<double>(  r*cos(phase)  ,  -r*sin(phase)  );
+    B[ indexTotal ] *= exp(  -0.25*dt_GPU*Bloch_Potential_XTheta(t, x, theta)  );
 
-    double x_max = dx*(X_DIM-1.)/2.;
-    B[indexTotal] *= 1. - exp( - pow(x-x_max,2)/pow(10.*dx,2)   );
-    B[indexTotal] *= 1. - exp( - pow(x+x_max,2)/pow(10.*dx,2)   );		
+    //double x_max = dx*(X_DIM-1.)/2.;
+    //B[indexTotal] *= 1. - exp( - pow(x-x_max,2)/pow(10.*dx,2)   );
+    //B[indexTotal] *= 1. - exp( - pow(x+x_max,2)/pow(10.*dx,2)   );		
 }}
 
 """
@@ -128,9 +123,13 @@ __device__ double KineticEnergy_plambda( double p, double lambda)
 return ( KineticEnergy(p + hBar*lambda/2.) - KineticEnergy( p - hBar*lambda/2.) )/hBar;
 }}
 
+__device__ double Bloch_KineticEnergy_plambda( double p, double lambda)
+{{
+return KineticEnergy(p + hBar*lambda/2.) + KineticEnergy( p - hBar*lambda/2.) ;
+}}
+
 __global__ void Kernel( pycuda::complex<double> *B )
 {{
-    pycuda::complex<double> I(0,1.);
 	
     int X_DIM = blockDim.x*gridDim.x;
     int P_DIM = gridDim.y;
@@ -147,6 +146,24 @@ __global__ void Kernel( pycuda::complex<double> *B )
     double r = exp( - D_Lambda*lambda*lambda );	
 
     B[ indexTotal ] *= pycuda::complex<double>( r*cos(phase), -r*sin(phase) );  
+}}
+
+
+__global__ void Kernel_Bloch( double dt_GPU, pycuda::complex<double> *B )
+{{
+	
+    int X_DIM = blockDim.x*gridDim.x;
+    int P_DIM = gridDim.y;
+ 
+    const int indexTotal = threadIdx.x + blockDim.x*blockIdx.x  + blockIdx.y*X_DIM;
+
+    const int i =  (blockIdx.y                          + P_DIM/2) % P_DIM ;	
+    const int j =  (threadIdx.x + blockDim.x*blockIdx.x + X_DIM/2) % X_DIM ;
+ 
+    double lambda     =  dlambda*(j - 0.5*X_DIM  );
+    double p          =       dp*(i - 0.5*P_DIM  );	
+
+    B[ indexTotal ] *= exp( - 0.5*dt_GPU*Bloch_KineticEnergy_plambda( p , lambda ) );
 }}
 
 """
@@ -277,6 +294,23 @@ __global__ void Kernel(pycuda::complex<double> *W_new , pycuda::complex<double> 
 
 """
 
+square_gpuarray_source = """
+#include <pycuda-complex.hpp>
+#include<math.h>
+
+__global__ void Kernel(pycuda::complex<double> *W_new , pycuda::complex<double> *W)
+{
+    
+    int X_DIM = blockDim.x*gridDim.x;
+    //int P_DIM = gridDim.y;
+ 
+    const int indexTotal = threadIdx.x + blockDim.x*blockIdx.x  + blockIdx.y*X_DIM;
+
+    W_new[indexTotal] = pow(W[indexTotal],2);
+}
+
+"""
+
 sum_stride_source = """
 #include <pycuda-complex.hpp>
 #include<math.h>
@@ -317,35 +351,6 @@ __global__ void Kernel( pycuda::complex<double> *B_out , pycuda::complex<double>
 
 """
 
-_smoothed_LinearDamping_source = """
-#include <pycuda-complex.hpp>
-#include<math.h>
-#define _USE_MATH_DEFINES
-
-%s
-__global__ void Kernel( pycuda::complex<double> *B )
-{
-	
-    int X_DIM = blockDim.x*gridDim.x;
-    int P_DIM = gridDim.y;
- 
-    const int indexTotal = threadIdx.x + blockDim.x*blockIdx.x  + blockIdx.y*X_DIM;
-
-    const int i =  (blockIdx.y                          + P_DIM/2) %% P_DIM ;	
-    const int j =  (threadIdx.x + blockDim.x*blockIdx.x + X_DIM/2) %% X_DIM ;
- 
-    double p    =  dp*(i - 0.5*P_DIM  );	
-
-    double epsilon2 = pow(0.5,2);
-
-    if( p >= 0.  )
-    	B[ indexTotal ] *=  p*p/sqrt( p*p + epsilon2  ); 
-    else
-        B[ indexTotal ] *= -p*p/sqrt( p*p + epsilon2  ); 
-
-}
-
-"""
 
 # F = - sign(p)f(p) 
 theta_fp_source = """
@@ -433,39 +438,53 @@ expPotential_GrossPitaevskii_source = """
 #include<math.h>
 #define _USE_MATH_DEFINES
 
-%s
-
-__device__ double Potential(double t, double x)
-{
-return %s;
-}
+{CUDA_constants}
 
 
-__global__ void Kernel( double t_GPU, 
+__global__ void Kernel(  double t_GPU, 
 	pycuda::complex<double> *B, pycuda::complex<double> *ProbMinus, pycuda::complex<double> *ProbPlus)
-{
+{{
     double t = t_GPU;
-    double secondOrderSplitFactor = 0.5;  // 1.0 for first order and 0.5 for second order	
 
     int X_DIM = blockDim.x*gridDim.x;
     int P_DIM = gridDim.y;
  
     const int indexTotal = threadIdx.x + blockDim.x*blockIdx.x  + blockIdx.y*X_DIM;
 
-    const int i =  (blockIdx.y                           + P_DIM/2) %% P_DIM ;	
-    const int j =  (threadIdx.x + blockDim.x*blockIdx.x  + X_DIM/2) %% X_DIM ;
+    const int i =  (blockIdx.y                           + P_DIM/2) % P_DIM ;	
+    const int j =  (threadIdx.x + blockDim.x*blockIdx.x  + X_DIM/2) % X_DIM ;
     	
     const double x     =     dx*( j - 0.5*X_DIM  );
     const double theta = dtheta*( i - 0.5*P_DIM  );
 
-    double phase  = -secondOrderSplitFactor*dt*a_GP * pycuda::real<double>( ProbMinus[indexTotal] - ProbPlus[indexTotal] )/hBar;
+    double phase  = -0.5*dt*a_GP * pycuda::real<double>( ProbMinus[indexTotal] - ProbPlus[indexTotal] )/hBar;
 	  	
     B[ indexTotal ] *= pycuda::complex<double>(  cos(phase)  ,  sin(phase)  );
 
-    //double x_max = dx*(X_DIM-1.)/2.;
-    //B[indexTotal] *= 1. - exp( - pow(x-x_max,2)/pow(20.*dx,2)   );
-    //B[indexTotal] *= 1. - exp( - pow(x+x_max,2)/pow(20.*dx,2)   );		
-}
+	
+}}
+
+
+__global__ void Kernel_Bloch( 
+	double dt_GPU, pycuda::complex<double> *B, pycuda::complex<double> *ProbMinus, pycuda::complex<double> *ProbPlus)
+{{
+    //double t = t_GPU;
+
+    int X_DIM = blockDim.x*gridDim.x;
+    int P_DIM = gridDim.y;
+ 
+    const int indexTotal = threadIdx.x + blockDim.x*blockIdx.x  + blockIdx.y*X_DIM;
+
+    const int i =  (blockIdx.y                           + P_DIM/2) % P_DIM ;	
+    const int j =  (threadIdx.x + blockDim.x*blockIdx.x  + X_DIM/2) % X_DIM ;
+    	
+    const double x     =     dx*( j - 0.5*X_DIM  );
+    const double theta = dtheta*( i - 0.5*P_DIM  );
+	  	
+    B[ indexTotal ] *= exp( -0.25*dt_GPU*a_GP * ( ProbMinus[indexTotal] + ProbPlus[indexTotal] ) );
+
+	
+}}
 
 """
 
@@ -492,8 +511,9 @@ class Propagator_Base :
 
 		self.sum_stride_Function = SourceModule(sum_stride_source).get_function( "Kernel" )
 
-		self.copy_gpuarray_Function = SourceModule(copy_gpuarray_source).get_function( "Kernel" )
+		self.copy_gpuarray = SourceModule(copy_gpuarray_source).get_function( "Kernel" )
 
+		self.square_gpuarray_GPU = SourceModule(square_gpuarray_source).get_function( "Kernel" )
 		
 
 
@@ -641,6 +661,13 @@ class Propagator_Base :
 		atan = np.arctan
 		M_E = np.e
 		return eval ( self.dPotentialString, np.__dict__, locals() )
+
+	def KineticEnergy(self, p ):
+		pow = np.power
+		atan = np.arctan
+		sqrt = np.sqrt
+		cosh = np.cosh
+		return eval ( self.kinematicString , np.__dict__, locals() )
 
 
 	def Fourier_XTheta_to_XP(self,M):
@@ -819,17 +846,25 @@ class Propagator_Base :
 
 	def SetCUDA_Functions(self):
 
-		self.expPotentialFunction = SourceModule(\
-			expPotential_source.format(CUDA_constants=self.CUDA_constants, potentialString=self.potentialString)
-					).get_function( "Kernel" )
+		self.expPotential_GPU = SourceModule(\
+			expPotential_source.format(CUDA_constants=self.CUDA_constants,
+						   potentialString=self.potentialString)
+						  ).get_function( "Kernel" )
 
-
-
+		self.expPotential_Bloch_GPU = SourceModule(\
+			expPotential_source.format(CUDA_constants=self.CUDA_constants,
+						   potentialString=self.potentialString)
+						  ).get_function( "Kernel_Bloch" )
 
 		self.expPLambdaKinetic_GPU = SourceModule(
 			expPLambdaKinetic_source.format(
 			CUDA_constants=self.CUDA_constants,kinematicString=self.kinematicString)
-			).get_function("Kernel")		
+			).get_function("Kernel")
+
+		self.expPLambdaKinetic_Bloch_GPU = SourceModule(
+			expPLambdaKinetic_source.format(
+			CUDA_constants=self.CUDA_constants,kinematicString=self.kinematicString)
+			).get_function("Kernel_Bloch")		
 
 
 		self.theta_fp_Damping_Function = SourceModule(\
@@ -845,11 +880,17 @@ class Propagator_Base :
 
 
 		if self.GPitaevskiiCoeff != 0. :		
-			self.expPotential_GrossPitaevskii_Function = SourceModule(\
-					expPotential_GrossPitaevskii_source%(self.CUDA_constants,self.potentialString),
-					arch="sm_20").get_function( "Kernel" )
+			self.expPotential_GrossPitaevskii_GPU = SourceModule(\
+					expPotential_GrossPitaevskii_source.format(
+					CUDA_constants=self.CUDA_constants)
+					).get_function( "Kernel" )
+	
+			self.expPotential_GrossPitaevskii_Bloch_GPU = SourceModule(\
+					expPotential_GrossPitaevskii_source.format(
+					CUDA_constants=self.CUDA_constants)
+					).get_function( "Kernel_Bloch" )
 
-		#self.dampingLaxWendorf_Function = SourceModule(dampingLaxWendorf_source%self.CUDA_constants).get_function("Kernel")
+
 
 	def WignerFunctionFromFile(self,n, fileName=None):
 
@@ -1649,6 +1690,22 @@ class Propagator_Base :
 		self.Fourier_Lambda_To_X_GPU( B_plus_GPU  )
 
 
+	def Purity_GPU(self, W_GPU , W_temp_GPU):		
+		self.square_gpuarray_GPU( W_temp_GPU , W_GPU ,  block=self.blockCUDA, grid=self.gridCUDA   ) 
+		return 2*np.pi * self.hBar * gpuarray.sum( W_temp_GPU ).get()*self.dX*self.dP
+
+
+	def ProbabilityX(self, Prob_X_GPU, W_GPU, P_gridDIM_32):
+		self.gpu_sum_axis0_Function( Prob_X_GPU, W_GPU, P_gridDIM_32,
+					     block=(512,1,1), grid=(self.X_gridDIM/512,1)   )
+
+		Prob_X_GPU *= self.dP
+		return Prob_X_GPU.get().real
+
+	def NonLinearEnergy(self,ProbabilityX):
+		return self.dX*0.5*self.GPitaevskiiCoeff * np.sum( ProbabilityX**2 )
+
+
 #=====================================================================================================
 #
 #        Propagation Wigner
@@ -1793,21 +1850,17 @@ class GPU_Wigner2D_GPitaevskii(Propagator_Base):
 
 			if self.GPitaevskiiCoeff != 0. :
 
-				self.gpu_sum_axis0_Function( Prob_X_GPU, W_GPU, P_gridDIM_32,
-							     block=(512,1,1), grid=(self.X_gridDIM/512,1)   )
-				Prob_X_GPU *= self.dP
-
-				#ProbabilitySquare_average.append( np.sum( Prob_X_GPU.get()**2 )*self.dX )
+				self.ProbabilityX( Prob_X_GPU, W_GPU, P_gridDIM_32 )
 				
 				self.MakeGrossPitaevskiiTerms( B_GP_minus_GPU, B_GP_plus_GPU, Prob_X_GPU ) 
 	
 			# p x -> theta x
 			self.Fourier_P_To_Theta_GPU( W_GPU )	
 
-			self.expPotentialFunction( t_GPU, W_GPU, block=self.blockCUDA, grid=self.gridCUDA )
+			self.expPotential_GPU( t_GPU, W_GPU, block=self.blockCUDA, grid=self.gridCUDA )
 
 			if self.GPitaevskiiCoeff != 0. :
-				self.expPotential_GrossPitaevskii_Function( t_GPU, W_GPU, B_GP_minus_GPU, B_GP_plus_GPU,
+				self.expPotential_GrossPitaevskii_GPU( t_GPU, W_GPU, B_GP_minus_GPU, B_GP_plus_GPU,
 				 					    block=self.blockCUDA, grid=self.gridCUDA )
 
 			######################## Kinetic Term #########################	
@@ -1826,9 +1879,7 @@ class GPU_Wigner2D_GPitaevskii(Propagator_Base):
 
 			if self.GPitaevskiiCoeff != 0. :
 
-				self.gpu_sum_axis0_Function( Prob_X_GPU, W_GPU, P_gridDIM_32,
-							     block=(512,1,1), grid=(self.X_gridDIM/512,1)   )
-				Prob_X_GPU *= self.dP
+				self.ProbabilityX( Prob_X_GPU, W_GPU, P_gridDIM_32)
 
 				ProbabilitySquare_average.append( np.sum( Prob_X_GPU.get()**2 )*self.dX )
 				
@@ -1839,10 +1890,10 @@ class GPU_Wigner2D_GPitaevskii(Propagator_Base):
 			######################   p x -> theta x   #########################
 			self.Fourier_P_To_Theta_GPU( W_GPU )
 
-			self.expPotentialFunction( t_GPU, W_GPU, block=self.blockCUDA, grid=self.gridCUDA )
+			self.expPotential_GPU( t_GPU, W_GPU, block=self.blockCUDA, grid=self.gridCUDA )
 
 			if self.GPitaevskiiCoeff != 0. :
-				self.expPotential_GrossPitaevskii_Function( t_GPU, W_GPU, B_GP_minus_GPU, B_GP_plus_GPU,
+				self.expPotential_GrossPitaevskii_GPU( t_GPU, W_GPU, B_GP_minus_GPU, B_GP_plus_GPU,
 				 					    block=self.blockCUDA, grid=self.gridCUDA )
 
 			# 
@@ -1951,17 +2002,15 @@ class GPU_Wigner2D_GPitaevskii(Propagator_Base):
 		return  0
 
 
-
-
 #=====================================================================================================
 #
 #        Propagation Bloch
 #
 #=====================================================================================================
 
-class GPU_Wigner2D_Bloch_GPitaevskii(Propagator_Base):
+class GPU_Wigner2D_GPitaevskii_Bloch(Propagator_Base):
 	"""
-	Wigner Propagator in 2D phase space with diffusion and amplituse damping
+	Wigner Bloch Propagator in 2D phase space with diffusion and amplituse damping
 	"""
 
 	def __init__(self,X_gridDIM,P_gridDIM,X_amplitude,P_amplitude, hBar ,mass,
@@ -1993,11 +2042,12 @@ class GPU_Wigner2D_Bloch_GPitaevskii(Propagator_Base):
 
 		self.SetCUDA_Functions()
 
-		self.Hamiltonian =  self.P**2 / (2.*self.mass) + self.Potential(0,self.X) 
+		self.Hamiltonian =  self.KineticEnergy(self.P)  + self.Potential(0,self.X) 
 		self.Hamiltonian_GPU = gpuarray.to_gpu( np.ascontiguousarray( self.Hamiltonian.astype(np.complex128) )  )
 
 		#self.f.create_dataset('Hamiltonian', data = self.Hamiltonian.real )
 		self.Hamiltonian   = self.fft_shift2D( self.Hamiltonian )
+
 
 
 	def Run(self ):
@@ -2041,10 +2091,8 @@ class GPU_Wigner2D_Bloch_GPitaevskii(Propagator_Base):
 		XdV = self.dPotential(0. , self.X)*self.X + 0.*self.P 
 		self.XdPotentialdX_GPU = gpuarray.to_gpu( np.ascontiguousarray( XdV.astype(np.complex128) )  )
 
-		LW_GPU      = gpuarray.to_gpu( np.ascontiguousarray( self.W_init , dtype = np.complex128) )
-		LW_temp_GPU = gpuarray.to_gpu( np.ascontiguousarray( self.W_init , dtype = np.complex128) )
-		LW_temp2_GPU = gpuarray.to_gpu( np.ascontiguousarray( self.W_init , dtype = np.complex128) )
-
+		W_step_GPU      = gpuarray.to_gpu( np.ascontiguousarray( self.W_init , dtype = np.complex128) )
+		W_temp_GPU = gpuarray.to_gpu( np.ascontiguousarray( self.W_init , dtype = np.complex128) )
 
 		print '         GPU memory Free  post gpu loading ', pycuda.driver.mem_get_info()[0]/float(2**30) , 'GB'
 		print ' ------------------------------------------------------------------------------- '
@@ -2076,10 +2124,12 @@ class GPU_Wigner2D_Bloch_GPitaevskii(Propagator_Base):
 		Overlap     = []
 
 		Hamiltonian_average = []
-
-		ProbabilitySquare_average = []
+		TotalEnergyHistory = []
+		NonLinearEnergyHistory = []
 
 		negativeArea = []
+
+		purity = []
 
 		dXdP = self.dX * self.dP 
 
@@ -2087,87 +2137,74 @@ class GPU_Wigner2D_Bloch_GPitaevskii(Propagator_Base):
 		self.gridCUDA  = (self.X_gridDIM/512, self.P_gridDIM)
 		P_gridDIM_32   = np.int32(self.P_gridDIM)
 
-		
+		dt_GPU = np.float64(self.dt)
 
+		
+		TotalEnergy =  dXdP*gpuarray.dot(W_GPU,self.Hamiltonian_GPU).get()
+		self.ProbabilityX( Prob_X_GPU, W_GPU, P_gridDIM_32)		
+		TotalEnergy += self.NonLinearEnergy( Prob_X_GPU.get() )
+
+		purity_t = self.Purity_GPU( W_GPU , W_temp_GPU )
+		
+		#...................................................................
+
+		print '        '
+		print '        '
 		for tIndex in timeRangeIndex:
+			#print '             '
 
 			t = (tIndex)*self.dt
 			t_GPU = np.float64(t)
 			timeRange.append(t)
-
-			if self.GPitaevskiiCoeff != 0. :
-
-				self.gpu_sum_axis0_Function( Prob_X_GPU, W_GPU, P_gridDIM_32,
-							     block=(512,1,1), grid=(self.X_gridDIM/512,1)   )
-				Prob_X_GPU *= self.dP
-
-				#ProbabilitySquare_average.append( np.sum( Prob_X_GPU.get()**2 )*self.dX )
-				
-				self.MakeGrossPitaevskiiTerms( B_GP_minus_GPU, B_GP_plus_GPU, Prob_X_GPU ) 
 	
-			# p x -> theta x
-			self.Fourier_P_To_Theta_GPU( W_GPU )	
+			if self.GPitaevskiiCoeff != 0. :
+				self.ProbabilityX( Prob_X_GPU, W_GPU, P_gridDIM_32)
+				self.MakeGrossPitaevskiiTerms( B_GP_minus_GPU, B_GP_plus_GPU, Prob_X_GPU ) 
 
-			self.expPotentialFunction( t_GPU, W_GPU, block=self.blockCUDA, grid=self.gridCUDA )
+			#___________________ p x -> theta x ______________________________________
+			self.Fourier_P_To_Theta_GPU( W_GPU ) 
+
+
+			self.expPotential_Bloch_GPU( dt_GPU, t_GPU, W_GPU, block=self.blockCUDA, grid=self.gridCUDA )
 
 			if self.GPitaevskiiCoeff != 0. :
-				self.expPotential_GrossPitaevskii_Function( t_GPU, W_GPU, B_GP_minus_GPU, B_GP_plus_GPU,
-				 					    block=self.blockCUDA, grid=self.gridCUDA )
+				self.expPotential_GrossPitaevskii_Bloch_GPU(
+					 dt_GPU, W_GPU, B_GP_minus_GPU, B_GP_plus_GPU,
+					 block=self.blockCUDA, grid=self.gridCUDA )
 
-			######################## Kinetic Term #########################	
 
-			#  theta x ->  p x 
-			self.Fourier_Theta_To_P_GPU( W_GPU )
-			# p x  ->  p lambda 
-			self.Fourier_X_To_Lambda_GPU( W_GPU )
+			#__________________  theta x ->  p lambda  ________________________________
+			self.Fourier_Theta_To_P_GPU( W_GPU ); self.Fourier_X_To_Lambda_GPU( W_GPU )
 
-			self.expPLambdaFunction( W_GPU, block=self.blockCUDA, grid=self.gridCUDA )
 
-			# p lambda ->  p x
+			######################## Kinetic Term #####################################################	
+			self.expPLambdaKinetic_Bloch_GPU( dt_GPU, W_GPU, block=self.blockCUDA, grid=self.gridCUDA )
+			###########################################################################################
+
+			#__________________ p lambda ->  p x _______________________________________
 			self.Fourier_Lambda_To_X_GPU( W_GPU )
 
-			################################################################
-
 			if self.GPitaevskiiCoeff != 0. :
+				self.ProbabilityX( Prob_X_GPU, W_GPU, P_gridDIM_32)
+				self.MakeGrossPitaevskiiTerms( B_GP_minus_GPU, B_GP_plus_GPU, Prob_X_GPU )
 
-				self.gpu_sum_axis0_Function( Prob_X_GPU, W_GPU, P_gridDIM_32,
-							     block=(512,1,1), grid=(self.X_gridDIM/512,1)   )
-				Prob_X_GPU *= self.dP
-
-				ProbabilitySquare_average.append( np.sum( Prob_X_GPU.get()**2 )*self.dX )
-				
-				self.MakeGrossPitaevskiiTerms( B_GP_minus_GPU, B_GP_plus_GPU, Prob_X_GPU ) 
-
-					
-
-			######################   p x -> theta x   #########################
+ 
+			#__________________ p x -> theta x_________________________________________
 			self.Fourier_P_To_Theta_GPU( W_GPU )
 
-			self.expPotentialFunction( t_GPU, W_GPU, block=self.blockCUDA, grid=self.gridCUDA )
+			self.expPotential_Bloch_GPU( dt_GPU, t_GPU, W_GPU, block=self.blockCUDA, grid=self.gridCUDA )
 
 			if self.GPitaevskiiCoeff != 0. :
-				self.expPotential_GrossPitaevskii_Function( t_GPU, W_GPU, B_GP_minus_GPU, B_GP_plus_GPU,
-				 					    block=self.blockCUDA, grid=self.gridCUDA )
+				self.expPotential_GrossPitaevskii_Bloch_GPU(
+					 dt_GPU, W_GPU, B_GP_minus_GPU, B_GP_plus_GPU,
+					 block=self.blockCUDA, grid=self.gridCUDA )
 
-			# 
-			#  theta x ->  p x 
-			#
-			
-			self.Fourier_Theta_To_P_GPU( W_GPU )							
+			#__________________ theta x -> p x _____________________________________________
+			self.Fourier_Theta_To_P_GPU( W_GPU )
 
-			if self.gammaDamping != 0.:
 
-				if self.dampingFunction == 'CaldeiraLeggett':
-					self.CaldeiraDissipatorOrder3( LW_GPU, LW_temp_GPU, W_GPU, self.Theta_fp_Damping )
-
-				
-				if self.dampingFunction == 'ODM':
-					weight = 1.     
-					sign   = 1.	# 1 for damping and -1 for pumping
-					self.Lindbladian_ODM_Order1 ( LW_GPU, LW_temp_GPU, LW_temp2_GPU, weight, sign,  W_GPU)
-
-				norm = gpuarray.sum( W_GPU  ).get()*(self.dX*self.dP)
-				W_GPU /= norm
+			norm = gpuarray.sum( W_GPU  ).get()*(self.dX*self.dP)
+			W_GPU /= norm
 
 			#....................... Saving ............................
 
@@ -2189,15 +2226,49 @@ class GPU_Wigner2D_Bloch_GPitaevskii(Propagator_Base):
 				dXdP*gpuarray.dot(W_GPU,self.XdPotentialdX_GPU).get() )	
 
 			Hamiltonian_average.append(
-				dXdP*gpuarray.dot(W_GPU,self.Hamiltonian_GPU).get() )	
+				dXdP*gpuarray.dot(W_GPU,self.Hamiltonian_GPU).get() )
 
-			self.zero_negative_Function( LW_temp_GPU , W_GPU,  block=self.blockCUDA, grid=self.gridCUDA)
-			negativeArea.append( gpuarray.sum(LW_temp_GPU).get()*dXdP )			
+			
+			# .........................................................................................
 
+			TotalEnergy_step     = dXdP*gpuarray.dot(W_GPU,self.Hamiltonian_GPU).get()
+			self.ProbabilityX( Prob_X_GPU, W_GPU, P_gridDIM_32)	
+			NonLinearEnergy_step = self.NonLinearEnergy( Prob_X_GPU.get() )	
+			TotalEnergy_step    += NonLinearEnergy_step
+
+			#...........................................................................................
+			purity_step = self.Purity_GPU( W_GPU , W_temp_GPU )
+			
+			#...........................................................................................	
+			
 			if tIndex%self.skipFrames == 0:
 				timeRangeIndexSaved.append(tIndex)
 				self.save_Frame(tIndex,W_GPU)	   
 
+			#print ' Energy_step = ', TotalEnergy_step, 'Energy = ', TotalEnergy
+
+
+			if tIndex > 0:
+
+				if (TotalEnergy_step < TotalEnergy) and  ( np.abs( purity_step ) < 1. ):
+					
+					#print 'Physical; dt =', dt_GPU
+					self.copy_gpuarray( W_step_GPU, W_GPU, block=self.blockCUDA,grid=self.gridCUDA)
+
+					purity.append(  purity_step  )
+					TotalEnergyHistory.append( TotalEnergy_step )
+					TotalEnergy = TotalEnergy_step
+					NonLinearEnergyHistory.append( NonLinearEnergy_step  )
+				else:
+					print 'dt = ', dt_GPU
+					dt_GPU = np.float64(dt_GPU/2.)
+					self.copy_gpuarray( W_GPU, W_step_GPU, block=self.blockCUDA,grid=self.gridCUDA)
+
+
+
+					
+	
+			 	
 			
 
 		self.timeRange             = np.array(timeRange)
@@ -2214,9 +2285,11 @@ class GPU_Wigner2D_Bloch_GPitaevskii(Propagator_Base):
 		self.PdPotentialdX_average  = np.array( PdPotentialdX_average ).real
 		self.XdPotentialdX_average  = np.array( XdPotentialdX_average ).real
 		self.Hamiltonian_average    = np.array( Hamiltonian_average   ).real
-		
+		self.TotalEnergyHistory            = np.array( TotalEnergyHistory   ).real
 		if self.GPitaevskiiCoeff != 0. :
-			self.ProbabilitySquare_average = np.array(ProbabilitySquare_average).real
+			self.NonLinearEnergyHistory = np.array(NonLinearEnergyHistory).real
+
+		self.purity = np.array( purity ).real
 
 		self.negativeArea = np.array(negativeArea).real
 
@@ -2236,15 +2309,11 @@ class GPU_Wigner2D_Bloch_GPitaevskii(Propagator_Base):
 		self.file['/Ehrenfest/XdPotentialdX_average'] = self.XdPotentialdX_average
 		self.file['/Ehrenfest/Hamiltonian_average'] = self.Hamiltonian_average
 
-		if self.GPitaevskiiCoeff != 0. :
-			self.file['/Ehrenfest/ProbabilitySquare_average'] =  self.ProbabilitySquare_average
 
 		self.file['W_init'] = self.W_init.real
 
-		#  theta x ->  p x 
-		#self.Fourier_Theta_To_P_GPU( W_GPU )
 		self.W_end =  W_GPU.get().real
-		self.file['W_end']  = self.W_end.real
+		self.file['W_end']  = self.W_end
 
 		#norm = gpuarray.sum( W_GPU  ).get()*(self.dX*self.dP)
 		#print '******* norm = ', norm.real
@@ -2257,6 +2326,8 @@ class GPU_Wigner2D_Bloch_GPitaevskii(Propagator_Base):
 		cuda_fft.cufftDestroy( self.plan_Z2Z_2D_Axes1.handle )
 
 		return  0
+
+
 
 
 
