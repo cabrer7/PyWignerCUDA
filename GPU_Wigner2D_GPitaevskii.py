@@ -2242,8 +2242,9 @@ class GPU_Wigner2D_GPitaevskii_Bloch(Propagator_Base):
 			#...........................................................................................	
 			
 			if tIndex%self.skipFrames == 0:
-				timeRangeIndexSaved.append(tIndex)
-				self.save_Frame(tIndex,W_GPU)	   
+				print 'step ', tIndex
+				#timeRangeIndexSaved.append(tIndex)
+				#self.save_Frame(tIndex,W_GPU)	   
 
 			#print ' Energy_step = ', TotalEnergy_step, 'Energy = ', TotalEnergy
 
@@ -2314,9 +2315,6 @@ class GPU_Wigner2D_GPitaevskii_Bloch(Propagator_Base):
 
 		self.W_end =  W_GPU.get().real
 		self.file['W_end']  = self.W_end
-
-		#norm = gpuarray.sum( W_GPU  ).get()*(self.dX*self.dP)
-		#print '******* norm = ', norm.real
 
 		self.file['negativeArea'] = self.negativeArea
 
