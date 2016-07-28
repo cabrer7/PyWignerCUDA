@@ -1758,6 +1758,7 @@ class GPU_Wigner2D_GPitaevskii(Propagator_Base):
 		self.mass = mass
 
 		self.SetCUDA_Constants() 
+
 		if self.GPitaevskiiCoeff != 0. :
 			self.CUDA_constants += '__constant__ double a_GP = %f; '%( self.GPitaevskiiCoeff )
 
@@ -2025,7 +2026,7 @@ class GPU_Wigner2D_GPitaevskii(Propagator_Base):
 
 #=====================================================================================================
 #
-#        Propagation Bloch
+#        Propagation Bloch: Ground State
 #
 #=====================================================================================================
 
@@ -2035,18 +2036,17 @@ class GPU_Wigner2D_GPitaevskii_Bloch(Propagator_Base):
 	"""
 
 	def __init__(self,X_gridDIM,P_gridDIM,X_amplitude,P_amplitude, hBar ,mass,
-			D_Theta, D_Lambda, gammaDamping, potentialString, dPotentialString,kinematicString,
-			normalization = 'Wigner'):
+			potentialString, kinematicString):
 		"""
 		
 		"""
-		self.normalization = normalization
-		self.D_Theta  = D_Theta
-		self.D_Lambda = D_Lambda
-		self.gammaDamping      =  gammaDamping
+
+		self.D_Theta  = 0.
+		self.D_Lambda = 0.
+		self.fp_Damping_String = '0.'
 
 		self.potentialString   =  potentialString
-		self.dPotentialString  =  dPotentialString
+		self.dPotentialString  =  '0.'
 		self.kinematicString   =  kinematicString
 
 		self.SetPhaseSpaceBox2D(X_gridDIM, P_gridDIM, X_amplitude, P_amplitude)		
@@ -2100,17 +2100,6 @@ class GPU_Wigner2D_GPitaevskii_Bloch(Propagator_Base):
 		W_GPU /= norm
 		print 'Initial W Norm = ', gpuarray.sum( W_GPU  ).get()*self.dX*self.dP
 
-		if self.dampingFunction == 'ODM':
-			self.SetA_ODM(self.epsilon)
-		
-		dPotentialdX = self.dPotential(0. , self.X) + 0.*self.P 
-		self.dPotentialdX_GPU = gpuarray.to_gpu( np.ascontiguousarray( dPotentialdX.astype(np.complex128) )  )
-
-		PdV = self.P*self.dPotential(0. , self.X)  
-		self.PdPotentialdX_GPU = gpuarray.to_gpu( np.ascontiguousarray( PdV.astype(np.complex128) )  )
-
-		XdV = self.dPotential(0. , self.X)*self.X + 0.*self.P 
-		self.XdPotentialdX_GPU = gpuarray.to_gpu( np.ascontiguousarray( XdV.astype(np.complex128) )  )
 
 		W_step_GPU      = gpuarray.to_gpu( np.ascontiguousarray( self.W_init , dtype = np.complex128) )
 		W_temp_GPU = gpuarray.to_gpu( np.ascontiguousarray( self.W_init , dtype = np.complex128) )
@@ -2133,10 +2122,6 @@ class GPU_Wigner2D_GPitaevskii_Bloch(Propagator_Base):
 
 		X_average   = []
 		X2_average  = []
-
-		dPotentialdX_average   = []
-		PdPotentialdX_average  = []
-		XdPotentialdX_average  = []
 
 		P_average              = []
 		P2_average  = []
@@ -2234,17 +2219,6 @@ class GPU_Wigner2D_GPitaevskii_Bloch(Propagator_Base):
 
 			P_average.append(    dXdP*gpuarray.dot(W_GPU,self.P_GPU  ).get() )	
 			P2_average.append(   dXdP*gpuarray.dot(W_GPU,self.P2_GPU ).get() )	
-		
-			XP_average.append(   dXdP*gpuarray.dot(W_GPU,self.XP_GPU ).get() )	
-
-			dPotentialdX_average.append(
-						dXdP*gpuarray.dot(W_GPU,self.dPotentialdX_GPU).get() )			
-
-			PdPotentialdX_average.append(
-				dXdP*gpuarray.dot(W_GPU,self.PdPotentialdX_GPU).get() )	
-
-			XdPotentialdX_average.append(
-				dXdP*gpuarray.dot(W_GPU,self.XdPotentialdX_GPU).get() )	
 
 			Hamiltonian_average.append(
 				dXdP*gpuarray.dot(W_GPU,self.Hamiltonian_GPU).get() )
@@ -2301,11 +2275,6 @@ class GPU_Wigner2D_GPitaevskii_Bloch(Propagator_Base):
 		self.P_average             = np.array(P_average).real
 		self.P2_average            = np.array(P2_average).real
 
-		self.XP_average            = np.array(XP_average).real
-
-		self.dPotentialdX_average   = np.array( dPotentialdX_average  ).real
-		self.PdPotentialdX_average  = np.array( PdPotentialdX_average ).real
-		self.XdPotentialdX_average  = np.array( XdPotentialdX_average ).real
 		self.Hamiltonian_average    = np.array( Hamiltonian_average   ).real
 		self.TotalEnergyHistory            = np.array( TotalEnergyHistory   ).real
 		if self.GPitaevskiiCoeff != 0. :
@@ -2324,11 +2293,6 @@ class GPU_Wigner2D_GPitaevskii_Bloch(Propagator_Base):
 		self.file['/Ehrenfest/P_Ehrenfest']  = self.P_average 
 		self.file['/Ehrenfest/P2_Ehrenfest'] = self.P2_average 
 
-		self.file['/Ehrenfest/XP_Ehrenfest'] = self.XP_average 
-
-		self.file['/Ehrenfest/dPotentialdX_Ehrenfest'] = self.dPotentialdX_average
-		self.file['/Ehrenfest/PdPotentialdX_average'] = self.PdPotentialdX_average			
-		self.file['/Ehrenfest/XdPotentialdX_average'] = self.XdPotentialdX_average
 		self.file['/Ehrenfest/Hamiltonian_average'] = self.Hamiltonian_average
 
 		self.file['/Potential'] = self.Potential(0, self.X_range)
@@ -2347,8 +2311,6 @@ class GPU_Wigner2D_GPitaevskii_Bloch(Propagator_Base):
 		cuda_fft.cufftDestroy( self.plan_Z2Z_2D_Axes1.handle )
 
 		return  0
-
-
 
 
 
