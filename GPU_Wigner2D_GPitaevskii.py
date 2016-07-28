@@ -31,6 +31,14 @@ expPotential_source = """
 
 {CUDA_constants}
 
+__device__ double Heaviside(double x)
+{{
+
+if( x < 0. ) return 0.;
+else return 1.;
+
+}}
+
 __device__ double Potential(double t, double x)
 {{
 return {potentialString};
@@ -642,6 +650,18 @@ class Propagator_Base :
 		cuda.memcpy_dtod(dest_GPU.ptr, source_GPU.ptr + floatSize*self.gridDIM_X*self.gridDIM_P, 0)
 		
 
+	def heaviside(self,x):
+	    x = np.array(x)
+	    if x.shape != ():
+		y = np.zeros(x.shape)
+		y[x > 0.0] = 1
+		y[x == 0.0] = 0.5
+	    else: # special case for 0d array (a number)
+		if x > 0: y = 1
+		elif x == 0: y = 0.5
+		else: y = 0
+	    return y
+
 	def Potential(self,t,x):
 		"""
 		Potential used to draw the energy level sets
@@ -651,6 +671,7 @@ class Propagator_Base :
 		M_E = np.e
 		sqrt = np.sqrt
 		exp = np.exp
+		Heaviside = self.heaviside
 		return eval ( self.potentialString, np.__dict__, locals() )	
 
 	def dPotential(self,t,x):
@@ -2310,6 +2331,8 @@ class GPU_Wigner2D_GPitaevskii_Bloch(Propagator_Base):
 		self.file['/Ehrenfest/XdPotentialdX_average'] = self.XdPotentialdX_average
 		self.file['/Ehrenfest/Hamiltonian_average'] = self.Hamiltonian_average
 
+		self.file['/Potential'] = self.Potential(0, self.X_range)
+		self.file['/PotentialString'] = self.potentialString
 
 		self.file['W_init'] = self.W_init.real
 
