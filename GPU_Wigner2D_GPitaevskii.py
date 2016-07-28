@@ -419,6 +419,28 @@ __global__ void Kernel( pycuda::complex<double> *Probability_x , pycuda::complex
 
 """
 
+gpu_sum_axis1_source = """
+#include <pycuda-complex.hpp>
+#include<math.h>
+#define _USE_MATH_DEFINES
+
+%s
+
+__global__ void Kernel( pycuda::complex<double> *Probability_p , pycuda::complex<double> *W , int X_DIM)
+{
+   int P_DIM = blockDim.x*gridDim.x;
+ 
+   const int index_p = (threadIdx.x + blockDim.x*blockIdx.x)*X_DIM ;
+
+   pycuda::complex<double> sum=0.;
+   for(int j=0; j<X_DIM; j++ )
+      sum += W[ index_p + j ];
+
+   Probability_p[ index_p ] = pycuda::real(sum);
+}
+
+"""
+
 roll_FirstRowCopy_source = """
 #include <pycuda-complex.hpp>
 #include<math.h>
@@ -897,7 +919,9 @@ class Propagator_Base :
 		self.roll_FirstRowCopy_Function = SourceModule(									     						roll_FirstRowCopy_source%self.CUDA_constants, arch="sm_20").get_function( "Kernel" )
 
 
-		self.gpu_sum_axis0_Function = SourceModule(									     						gpu_sum_axis0_source%self.CUDA_constants, arch="sm_20").get_function( "Kernel" )
+		self.gpu_sum_axis0_Function = SourceModule(									     						gpu_sum_axis0_source%self.CUDA_constants ).get_function( "Kernel" )
+
+		self.gpu_sum_axis1_Function = SourceModule(									     						gpu_sum_axis1_source%self.CUDA_constants ).get_function( "Kernel" )
 
 
 		if self.GPitaevskiiCoeff != 0. :		
@@ -1723,6 +1747,13 @@ class Propagator_Base :
 		Prob_X_GPU *= self.dP
 		return Prob_X_GPU.get().real
 
+	def ProbabilityP(self, Prob_P_GPU, W_GPU, X_gridDIM_32):
+		self.gpu_sum_axis1_Function( Prob_P_GPU, W_GPU, X_gridDIM_32,
+					     block=(512,1,1), grid=(self.P_gridDIM/512,1)   )
+
+		Prob_P_GPU *= self.dX
+		return Prob_P_GPU.get().real
+
 	def NonLinearEnergy(self,ProbabilityX):
 		return self.dX*0.5*self.GPitaevskiiCoeff * np.sum( ProbabilityX**2 )
 
@@ -2026,7 +2057,7 @@ class GPU_Wigner2D_GPitaevskii(Propagator_Base):
 
 #=====================================================================================================
 #
-#        Propagation Bloch: G
+#        Propagation Bloch: 
 #
 #=====================================================================================================
 
@@ -2309,13 +2340,15 @@ class GPU_Wigner2D_GPitaevskii_Bloch(Propagator_Base):
 
 
 
-	def Run_ExitedState1(self ):
-
+	def Run_ExitedState1(self, timeSteps=None ):
 
 		print '         GPU memory Total       ', pycuda.driver.mem_get_info()[1]/float(2**30) , 'GB'
 		print '         GPU memory Free        ', pycuda.driver.mem_get_info()[0]/float(2**30) , 'GB'
 
-		timeRangeIndex = range(0, self.timeSteps+1)
+		if timeSteps==None:
+			timeRangeIndex = range(0, self.timeSteps+1)
+		else:
+			timeRangeIndex = range(0, timeSteps+1)
 
 		W_GPU = gpuarray.to_gpu( np.ascontiguousarray( self.W_init , dtype = np.complex128) )	
 		norm = gpuarray.sum( W_GPU  ).get()*self.dX*self.dP
@@ -2335,9 +2368,9 @@ class GPU_Wigner2D_GPitaevskii_Bloch(Propagator_Base):
 		if self.GPitaevskiiCoeff != 0. :
 			B_GP_minus_GPU = gpuarray.empty_like( W_GPU )
 			B_GP_plus_GPU  = gpuarray.empty_like( W_GPU )
-			Prob_X_GPU       = gpuarray.empty( (self.X_gridDIM) , dtype = np.complex128 )
 
-				
+		Prob_X_GPU       = gpuarray.empty( (self.X_gridDIM) , dtype = np.complex128 )
+		Prob_P_GPU       = gpuarray.empty( (self.P_gridDIM) , dtype = np.complex128 )		
 		
 
 		timeRange           = []
@@ -2360,6 +2393,7 @@ class GPU_Wigner2D_GPitaevskii_Bloch(Propagator_Base):
 		self.blockCUDA = (512,1,1)
 		self.gridCUDA  = (self.X_gridDIM/512, self.P_gridDIM)
 		P_gridDIM_32   = np.int32(self.P_gridDIM)
+		X_gridDIM_32   = np.int32(self.X_gridDIM)
 
 		dt_GPU = np.float64(self.dt)
 
@@ -2454,6 +2488,9 @@ class GPU_Wigner2D_GPitaevskii_Bloch(Propagator_Base):
 			NonLinearEnergy_step = self.NonLinearEnergy( Prob_X_GPU.get() )	
 			TotalEnergy_step    += NonLinearEnergy_step
 
+			self.ProbabilityP( Prob_P_GPU, W_GPU, P_gridDIM_32)
+			negativeProb_p_Q = any( x < 0 for x in Prob_P_GPU.get() )
+			#print ' neg Prob P ', negativeProb_p_Q
 			#...........................................................................................
 			purity_step = self.Purity_GPU( W_GPU , W_temp_GPU )
 			
@@ -2464,7 +2501,7 @@ class GPU_Wigner2D_GPitaevskii_Bloch(Propagator_Base):
 
 			if tIndex > 0:
 
-				if (TotalEnergy_step < TotalEnergy) and  ( np.abs( purity_step ) < 1. ):
+				if (TotalEnergy_step < TotalEnergy) and  ( np.abs( purity_step ) < 1. ) and negativeProb_p_Q==False:
 					
 					self.copy_gpuarray( W_step_GPU, W_GPU, block=self.blockCUDA,grid=self.gridCUDA)
 
@@ -2478,11 +2515,7 @@ class GPU_Wigner2D_GPitaevskii_Bloch(Propagator_Base):
 					self.copy_gpuarray( W_GPU, W_step_GPU, block=self.blockCUDA,grid=self.gridCUDA)
 
 
-
-					
 	
-			 	
-			
 
 		self.timeRange             = np.array(timeRange)
 
@@ -2502,7 +2535,7 @@ class GPU_Wigner2D_GPitaevskii_Bloch(Propagator_Base):
 		self.W_1 =  W_GPU.get().real
 		self.file['W_1']  = self.W_1
 
-		#self.file.close()
+		self.file.close()
 		#cuda_fft.cufftDestroy( self.plan_Z2Z_2D.handle )
 		#cuda_fft.cufftDestroy( self.plan_Z2Z_2D_Axes0.handle )
 		#cuda_fft.cufftDestroy( self.plan_Z2Z_2D_Axes1.handle )
