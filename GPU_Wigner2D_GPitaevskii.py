@@ -2026,7 +2026,7 @@ class GPU_Wigner2D_GPitaevskii(Propagator_Base):
 
 #=====================================================================================================
 #
-#        Propagation Bloch: Ground State
+#        Propagation Bloch: G
 #
 #=====================================================================================================
 
@@ -2126,14 +2126,9 @@ class GPU_Wigner2D_GPitaevskii_Bloch(Propagator_Base):
 		P_average              = []
 		P2_average  = []
 
-		XP_average  = []
-		Overlap     = []
-
 		Hamiltonian_average = []
 		TotalEnergyHistory = []
 		NonLinearEnergyHistory = []
-
-		negativeArea = []
 
 		purity = []
 
@@ -2282,7 +2277,6 @@ class GPU_Wigner2D_GPitaevskii_Bloch(Propagator_Base):
 
 		self.purity = np.array( purity ).real
 
-		self.negativeArea = np.array(negativeArea).real
 
 		self.file['timeRange']             = timeRange
 		self.file['timeRangeIndexSaved']   = timeRangeIndexSaved	
@@ -2300,17 +2294,219 @@ class GPU_Wigner2D_GPitaevskii_Bloch(Propagator_Base):
 
 		self.file['W_init'] = self.W_init.real
 
-		self.W_end =  W_GPU.get().real
-		self.file['W_end']  = self.W_end
+		self.W_0_GPU =  W_GPU.copy()
+		self.W_0     =  W_GPU.get().real
+		self.file['W_0']  = self.W_0
 
-		self.file['negativeArea'] = self.negativeArea
-
-		self.file.close()
-		cuda_fft.cufftDestroy( self.plan_Z2Z_2D.handle )
-		cuda_fft.cufftDestroy( self.plan_Z2Z_2D_Axes0.handle )
-		cuda_fft.cufftDestroy( self.plan_Z2Z_2D_Axes1.handle )
+		#self.file.close()
+		#cuda_fft.cufftDestroy( self.plan_Z2Z_2D.handle )
+		#cuda_fft.cufftDestroy( self.plan_Z2Z_2D_Axes0.handle )
+		#cuda_fft.cufftDestroy( self.plan_Z2Z_2D_Axes1.handle )
 
 		return  0
 
+
+
+
+
+	def Run_ExitedState1(self ):
+
+
+		print '         GPU memory Total       ', pycuda.driver.mem_get_info()[1]/float(2**30) , 'GB'
+		print '         GPU memory Free        ', pycuda.driver.mem_get_info()[0]/float(2**30) , 'GB'
+
+		timeRangeIndex = range(0, self.timeSteps+1)
+
+		W_GPU = gpuarray.to_gpu( np.ascontiguousarray( self.W_init , dtype = np.complex128) )	
+		norm = gpuarray.sum( W_GPU  ).get()*self.dX*self.dP
+		W_GPU /= norm
+		print 'Initial W Norm = ', gpuarray.sum( W_GPU  ).get()*self.dX*self.dP
+
+		cW_GPU = W_GPU.copy()
+
+		W_step_GPU      = gpuarray.to_gpu( np.ascontiguousarray( self.W_init , dtype = np.complex128) )
+		W_temp_GPU = gpuarray.to_gpu( np.ascontiguousarray( self.W_init , dtype = np.complex128) )
+
+		print '         GPU memory Free  post gpu loading ', pycuda.driver.mem_get_info()[0]/float(2**30) , 'GB'
+		print ' ------------------------------------------------------------------------------- '
+		print '     Split Operator Propagator  GPU with damping                                 '
+		print ' ------------------------------------------------------------------------------- '
+
+		if self.GPitaevskiiCoeff != 0. :
+			B_GP_minus_GPU = gpuarray.empty_like( W_GPU )
+			B_GP_plus_GPU  = gpuarray.empty_like( W_GPU )
+			Prob_X_GPU       = gpuarray.empty( (self.X_gridDIM) , dtype = np.complex128 )
+
+				
+		
+
+		timeRange           = []
+		timeRangeIndexSaved = []
+
+		X_average   = []
+		X2_average  = []
+
+		P_average              = []
+		P2_average  = []
+
+		Hamiltonian_average = []
+		TotalEnergyHistory = []
+		NonLinearEnergyHistory = []
+
+		purity = []
+
+		dXdP = self.dX * self.dP 
+
+		self.blockCUDA = (512,1,1)
+		self.gridCUDA  = (self.X_gridDIM/512, self.P_gridDIM)
+		P_gridDIM_32   = np.int32(self.P_gridDIM)
+
+		dt_GPU = np.float64(self.dt)
+
+		
+		TotalEnergy =  dXdP*gpuarray.dot(W_GPU,self.Hamiltonian_GPU).get()
+		self.ProbabilityX( Prob_X_GPU, W_GPU, P_gridDIM_32)		
+		TotalEnergy += self.NonLinearEnergy( Prob_X_GPU.get() )
+
+		purity_t = self.Purity_GPU( W_GPU , W_temp_GPU )
+		
+		#...................................................................
+
+		print '        '
+		print '        '
+		for tIndex in timeRangeIndex:
+			#print '             '
+
+			t = (tIndex)*self.dt
+			t_GPU = np.float64(t)
+			timeRange.append(t)
+	
+			if self.GPitaevskiiCoeff != 0. :
+				self.ProbabilityX( Prob_X_GPU, W_GPU, P_gridDIM_32)
+				self.MakeGrossPitaevskiiTerms( B_GP_minus_GPU, B_GP_plus_GPU, Prob_X_GPU ) 
+
+			#___________________ p x -> theta x ______________________________________
+			self.Fourier_P_To_Theta_GPU( W_GPU ) 
+
+
+			self.expPotential_Bloch_GPU( dt_GPU, t_GPU, W_GPU, block=self.blockCUDA, grid=self.gridCUDA )
+
+			if self.GPitaevskiiCoeff != 0. :
+				self.expPotential_GrossPitaevskii_Bloch_GPU(
+					 dt_GPU, W_GPU, B_GP_minus_GPU, B_GP_plus_GPU,
+					 block=self.blockCUDA, grid=self.gridCUDA )
+
+
+			#__________________  theta x ->  p lambda  ________________________________
+			self.Fourier_Theta_To_P_GPU( W_GPU ); self.Fourier_X_To_Lambda_GPU( W_GPU )
+
+
+			######################## Kinetic Term #####################################################	
+			self.expPLambdaKinetic_Bloch_GPU( dt_GPU, W_GPU, block=self.blockCUDA, grid=self.gridCUDA )
+			###########################################################################################
+
+			#__________________ p lambda ->  p x _______________________________________
+			self.Fourier_Lambda_To_X_GPU( W_GPU )
+
+			if self.GPitaevskiiCoeff != 0. :
+				self.ProbabilityX( Prob_X_GPU, W_GPU, P_gridDIM_32)
+				self.MakeGrossPitaevskiiTerms( B_GP_minus_GPU, B_GP_plus_GPU, Prob_X_GPU )
+
+ 
+			#__________________ p x -> theta x_________________________________________
+			self.Fourier_P_To_Theta_GPU( W_GPU )
+
+			self.expPotential_Bloch_GPU( dt_GPU, t_GPU, W_GPU, block=self.blockCUDA, grid=self.gridCUDA )
+
+			if self.GPitaevskiiCoeff != 0. :
+				self.expPotential_GrossPitaevskii_Bloch_GPU(
+					 dt_GPU, W_GPU, B_GP_minus_GPU, B_GP_plus_GPU,
+					 block=self.blockCUDA, grid=self.gridCUDA )
+
+			#__________________ theta x -> p x _____________________________________________
+			self.Fourier_Theta_To_P_GPU( W_GPU )
+
+			c =  2*np.pi*self.hBar*dXdP*gpuarray.dot(W_GPU,self.W_0_GPU ).get()
+			cW_GPU *= 0.
+			cW_GPU += c*self.W_0_GPU
+
+			W_GPU -= cW_GPU
+
+			norm = gpuarray.sum( W_GPU  ).get()*(self.dX*self.dP)
+			W_GPU /= norm
+
+			#....................... Saving ............................
+
+			X_average.append(    dXdP*gpuarray.dot(W_GPU,self.X_GPU ).get()  )
+			X2_average.append(   dXdP*gpuarray.dot(W_GPU,self.X2_GPU ).get() )
+
+			P_average.append(    dXdP*gpuarray.dot(W_GPU,self.P_GPU  ).get() )	
+			P2_average.append(   dXdP*gpuarray.dot(W_GPU,self.P2_GPU ).get() )	
+
+			Hamiltonian_average.append(
+				dXdP*gpuarray.dot(W_GPU,self.Hamiltonian_GPU).get() )
+
+			
+			# .........................................................................................
+
+			TotalEnergy_step     = dXdP*gpuarray.dot(W_GPU,self.Hamiltonian_GPU).get()
+			self.ProbabilityX( Prob_X_GPU, W_GPU, P_gridDIM_32)	
+			NonLinearEnergy_step = self.NonLinearEnergy( Prob_X_GPU.get() )	
+			TotalEnergy_step    += NonLinearEnergy_step
+
+			#...........................................................................................
+			purity_step = self.Purity_GPU( W_GPU , W_temp_GPU )
+			
+			#...........................................................................................	
+			
+			if tIndex%self.skipFrames == 0:
+				print 'step ', tIndex
+
+			if tIndex > 0:
+
+				if (TotalEnergy_step < TotalEnergy) and  ( np.abs( purity_step ) < 1. ):
+					
+					self.copy_gpuarray( W_step_GPU, W_GPU, block=self.blockCUDA,grid=self.gridCUDA)
+
+					purity.append(  purity_step  )
+					TotalEnergyHistory.append( TotalEnergy_step )
+					TotalEnergy = TotalEnergy_step
+					NonLinearEnergyHistory.append( NonLinearEnergy_step  )
+				else:
+					print 'dt = ', dt_GPU
+					dt_GPU = np.float64(dt_GPU/2.)
+					self.copy_gpuarray( W_GPU, W_step_GPU, block=self.blockCUDA,grid=self.gridCUDA)
+
+
+
+					
+	
+			 	
+			
+
+		self.timeRange             = np.array(timeRange)
+
+		self.X_average             = np.array(X_average).real
+		self.X2_average            = np.array(X2_average).real
+
+		self.P_average             = np.array(P_average).real
+		self.P2_average            = np.array(P2_average).real
+
+		self.Hamiltonian_average    = np.array( Hamiltonian_average   ).real
+		self.TotalEnergyHistory            = np.array( TotalEnergyHistory   ).real
+		if self.GPitaevskiiCoeff != 0. :
+			self.NonLinearEnergyHistory = np.array(NonLinearEnergyHistory).real
+
+		self.purity = np.array( purity ).real
+
+		self.W_1 =  W_GPU.get().real
+		self.file['W_1']  = self.W_1
+
+		#self.file.close()
+		#cuda_fft.cufftDestroy( self.plan_Z2Z_2D.handle )
+		#cuda_fft.cufftDestroy( self.plan_Z2Z_2D_Axes0.handle )
+		#cuda_fft.cufftDestroy( self.plan_Z2Z_2D_Axes1.handle )
+
+		return  0
 
 
