@@ -462,6 +462,7 @@ DiracPropagatorA_source = """
 #include<math.h>
 #define _USE_MATH_DEFINES
 
+{CUDAconstants}
 
 __device__  double A0(double t, double x, double y, double z)
 {{
@@ -492,7 +493,7 @@ __device__ double VectorPotentialSquareSum(double t, double x, double y, double 
 __global__ void DiracPropagatorA_Kernel(
  pycuda::complex<double>  *Psi1, pycuda::complex<double>   *Psi2, pycuda::complex<double>  *Psi3, pycuda::complex<double>  *Psi4, double t )
 {{
-  {CUDAconstants}
+  
 
   const int DIM_X = blockDim.x;
   const int DIM_Y = gridDim.x;
@@ -736,13 +737,20 @@ class GPU_Dirac3D:
 			Potential_0_Average_source.format(CUDAconstants=self.CUDA_constants,A0=self.Potential_0_String)  
 			).get_function("Kernel")
 
+		"""print DiracPropagatorA_source.format(
+					CUDAconstants=self.CUDA_constants,
+					A0=self.Potential_0_String, 
+ 					A1=self.Potential_1_String, 
+					A2=self.Potential_2_String, 
+					A3=self.Potential_3_String)"""
+
 		self.DiracPropagatorA  =  \
 		SourceModule( DiracPropagatorA_source.format(
 					CUDAconstants=self.CUDA_constants,
 					A0=self.Potential_0_String, 
  					A1=self.Potential_1_String, 
 					A2=self.Potential_2_String, 
-					A3=self.Potential_3_String),arch="sm_20").get_function( "DiracPropagatorA_Kernel" )
+					A3=self.Potential_3_String) ).get_function( "DiracPropagatorA_Kernel" )
 
 		self.DiracAbsorbBoundary  =  \
 		SourceModule(DiracAbsorbBoundary_source,arch="sm_20").get_function( "AbsorbBoundary_Kernel" )
@@ -1034,38 +1042,38 @@ class GPU_Dirac3D:
 		print ' progress ', 100*t/(self.timeSteps+1), '%'
 
 		PsiTemp = Psi1_GPU.get()[sliceZ,:,:]
-		f1['z/1/real/'+str(t)] = np.real( PsiTemp )
-		f1['z/1/imag/'+str(t)] = np.imag( PsiTemp )
+		f1['xy/1/real/'+str(t)] = np.real( PsiTemp )
+		f1['xy/1/imag/'+str(t)] = np.imag( PsiTemp )
 
 		PsiTemp = Psi2_GPU.get()[sliceZ,:,:]
-		f1['z/2/real/'+str(t)] = np.real( PsiTemp )
-		f1['z/2/imag/'+str(t)] = np.imag( PsiTemp )
+		f1['xy/2/real/'+str(t)] = np.real( PsiTemp )
+		f1['xy/2/imag/'+str(t)] = np.imag( PsiTemp )
 
 		PsiTemp = Psi3_GPU.get()[sliceZ,:,:]
-		f1['z/3/real/'+str(t)] = np.real( PsiTemp )
-		f1['z/3/imag/'+str(t)] = np.imag( PsiTemp )
+		f1['xy/3/real/'+str(t)] = np.real( PsiTemp )
+		f1['xy/3/imag/'+str(t)] = np.imag( PsiTemp )
 
 		PsiTemp = Psi4_GPU.get()[sliceZ,:,:]
-		f1['z/4/real/'+str(t)] = np.real( PsiTemp )
-		f1['z/4/imag/'+str(t)] = np.imag( PsiTemp )
+		f1['xy/4/real/'+str(t)] = np.real( PsiTemp )
+		f1['xy/4/imag/'+str(t)] = np.imag( PsiTemp )
 
 		#		
 
 		PsiTemp = Psi1_GPU.get()[:,sliceY,:]
-		f1['y/1/real/'+str(t)] = np.real( PsiTemp )
-		f1['y/1/imag/'+str(t)] = np.imag( PsiTemp )
+		f1['xz/1/real/'+str(t)] = np.real( PsiTemp )
+		f1['xz/1/imag/'+str(t)] = np.imag( PsiTemp )
 
 		PsiTemp = Psi2_GPU.get()[:,sliceY,:]
-		f1['y/2/real/'+str(t)] = np.real( PsiTemp )
-		f1['y/2/imag/'+str(t)] = np.imag( PsiTemp )
+		f1['xz/2/real/'+str(t)] = np.real( PsiTemp )
+		f1['xz/2/imag/'+str(t)] = np.imag( PsiTemp )
 
 		PsiTemp = Psi3_GPU.get()[:,sliceY,:]
-		f1['y/3/real/'+str(t)] = np.real( PsiTemp )
-		f1['y/3/imag/'+str(t)] = np.imag( PsiTemp )
+		f1['xz/3/real/'+str(t)] = np.real( PsiTemp )
+		f1['xz/3/imag/'+str(t)] = np.imag( PsiTemp )
 
 		PsiTemp = Psi4_GPU.get()[:,sliceY,:]
-		f1['y/4/real/'+str(t)] = np.real( PsiTemp )
-		f1['y/4/imag/'+str(t)] = np.imag( PsiTemp )
+		f1['xz/4/real/'+str(t)] = np.real( PsiTemp )
+		f1['xz/4/imag/'+str(t)] = np.imag( PsiTemp )
 
 
 	def save_Density(self,f1,t,Psi1_GPU,Psi2_GPU,Psi3_GPU,Psi4_GPU):
@@ -1127,7 +1135,7 @@ class GPU_Dirac3D:
 		norm += np.sum(np.abs(Psi[1])**2)
 		norm += np.sum(np.abs(Psi[2])**2)
 		norm += np.sum(np.abs(Psi[3])**2)
-		norm *= self.dX*self.dY
+		norm *= self.dX*self.dY*self.dZ
 		norm = np.sqrt(norm)		
 
 		return norm
@@ -1139,7 +1147,7 @@ class GPU_Dirac3D:
 		norm += gpuarray.sum( Psi3.__abs__()**2  ).get()
 		norm += gpuarray.sum( Psi4.__abs__()**2  ).get()
 
-		norm = np.sqrt(norm*self.dX * self.dY * self.dY )
+		norm = np.sqrt(norm*self.dX * self.dY * self.dZ )
 
 		#print '               norm GPU = ', norm		
 		
@@ -1171,7 +1179,7 @@ class GPU_Dirac3D:
 		average += gpuarray.dot(Psi3_GPU.__abs__()**2,self.X_GPU).get()
 		average += gpuarray.dot(Psi4_GPU.__abs__()**2,self.X_GPU).get()
 
-		average *= self.dX*self.dY
+		average *= self.dX*self.dY*self.dZ
 
 		return average	
 
@@ -1182,7 +1190,7 @@ class GPU_Dirac3D:
 		average += gpuarray.dot(Psi3_GPU.__abs__()**2,self.Y_GPU).get()
 		average += gpuarray.dot(Psi4_GPU.__abs__()**2,self.Y_GPU).get()
 
-		average *= self.dX*self.dY
+		average *= self.dX*self.dY*self.dZ
 
 		return average		
 
@@ -1193,7 +1201,7 @@ class GPU_Dirac3D:
 		average += gpuarray.dot(Psi3_GPU.__abs__()**2,self.Px_GPU).get()
 		average += gpuarray.dot(Psi4_GPU.__abs__()**2,self.Px_GPU).get()
 
-		average *= self.dX*self.dY
+		average *= self.dX*self.dY*self.dZ
 
 		return average	
 
@@ -1204,7 +1212,7 @@ class GPU_Dirac3D:
 		average += gpuarray.dot(Psi3_GPU.__abs__()**2,self.Py_GPU).get()
 		average += gpuarray.dot(Psi4_GPU.__abs__()**2,self.Py_GPU).get()
 
-		average *= self.dX*self.dY
+		average *= self.dX*self.dY*self.dZ
 
 		return average		
 
@@ -1236,7 +1244,7 @@ class GPU_Dirac3D:
 		average +=  gpuarray.dot(Psi1_GPU, Psi3_GPU.conj()).get()
 		average -=  gpuarray.dot(Psi2_GPU, Psi4_GPU.conj()).get()
 
-		average *= self.dX*self.dY
+		average *= self.dX*self.dY*self.dZ
 
 		return average
 
