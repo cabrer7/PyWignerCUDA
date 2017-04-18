@@ -1193,6 +1193,40 @@ double gammaDamping)
 
 #..........................................................................................................
 
+
+TakabayashiAngle_source = """
+#include <pycuda-complex.hpp>
+#include<math.h>
+#define _USE_MATH_DEFINES
+
+//............................................................................................................
+
+__global__ void Kernel( double * TakabayashiAngle,
+pycuda::complex<double>* W11,  pycuda::complex<double>* W12,  pycuda::complex<double>* W13,  pycuda::complex<double>* W14,
+pycuda::complex<double>* W21,  pycuda::complex<double>* W22,  pycuda::complex<double>* W23,  pycuda::complex<double>* W24,
+pycuda::complex<double>* W31,  pycuda::complex<double>* W32,  pycuda::complex<double>* W33,  pycuda::complex<double>* W34,
+pycuda::complex<double>* W41,  pycuda::complex<double>* W42,  pycuda::complex<double>* W43,  pycuda::complex<double>* W44 )
+{
+
+   const int X_gridDIM = blockDim.x * gridDim.z;
+   //const int P_gridDIM = gridDim.x;
+   const int indexTotal = threadIdx.x + blockIdx.z*blockDim.x + X_gridDIM * blockIdx.x   ;	
+
+  double s = 2.*pycuda::imag<double>( W13[indexTotal] ) + 2.*pycuda::imag<double>( W24[indexTotal] );
+
+  double c =  pycuda::real<double>(W33[indexTotal]);
+         c += pycuda::real<double>(W44[indexTotal]);
+  	 c -= pycuda::real<double>(W11[indexTotal]);
+	 c -= pycuda::real<double>(W22[indexTotal]);
+
+  TakabayashiAngle[indexTotal] = atan2(s,c);
+
+}
+
+"""
+
+#..........................................................................................................
+
 Potential_0_Average_source = """
 #include <pycuda-complex.hpp>
 #include<math.h>
@@ -2024,12 +2058,15 @@ class GPU_WignerDirac2D_4x4:
 		self.transmission_Function = SourceModule(
 			transmission_source%(self.CUDA_constants)).get_function("transmission_Kernel") 
 
+		self.TakabayashiAngle_Function = SourceModule( TakabayashiAngle_source ).get_function("Kernel" )
+
 		try :
 			self.DiracPropagator_DampingODM = \
 			SourceModule( DiracPropagator_DampingODM_source%(self.CUDA_constants),
 			arch="sm_20").get_function("DampingODM_Kernel")
 		except:
 			pass		
+
 
 
 		self.Potential_0_Average_Function = \
@@ -2271,6 +2308,15 @@ class GPU_WignerDirac2D_4x4:
 		norm +=	np.sum( np.abs(Psi[3])**2  )*self.dX*self.dP
 
 		return norm
+
+	def TakabayashiAngle_CPU(self,W):
+		WW = W.copy()
+		s = 2.*np.imag( WW[0,2] ) + 2.*np.imag( WW[1,3] );
+		c =  np.real( WW[2,2] );
+		c += np.real( WW[3,3] );
+		c -= np.real( WW[0,0] );
+		c -= np.real( WW[1,1] );
+		return np.arctan2(s,c);
 
 	#...................................................................................
 
@@ -3247,7 +3293,8 @@ class GPU_WignerDirac2D_4x4:
 		f11['potential_3_String'] = self.Potential_3_String
 		
 
-		
+		self.TakabayashiAngle_GPU = gpuarray.zeros( (self.P_gridDIM,self.X_gridDIM) , dtype = np.float64 )	
+
 		W11_GPU = gpuarray.to_gpu( np.ascontiguousarray(self.W_init[0,0],dtype = np.complex128) )
 		W12_GPU = gpuarray.to_gpu( np.ascontiguousarray(self.W_init[0,1],dtype = np.complex128) )
 		W13_GPU = gpuarray.to_gpu( np.ascontiguousarray(self.W_init[0,2],dtype = np.complex128) )
@@ -3344,6 +3391,7 @@ class GPU_WignerDirac2D_4x4:
 
 		negativity   = []
 		transmission = []
+		
 
 		timeRange        = np.array([0.])
 
@@ -3639,6 +3687,7 @@ class GPU_WignerDirac2D_4x4:
 				if t_index % self.skipFrames == 0:
 
 					timeSavedIndexRange.append(t_index)					
+					#print ' Norm = ', self.Wigner_4x4_Norm_GPU(W11_GPU, W22_GPU, W33_GPU, W44_GPU)
 
 					if self.frameSaveMode == 'Wigner_4X4':
 						self.save_WignerFunction(   f11, t_index,
@@ -3656,6 +3705,14 @@ class GPU_WignerDirac2D_4x4:
 		
 		final_time = time.time()
 		print ' computation time = ', final_time - initial_time, ' seconds'
+
+		#...........................................................................
+
+		self.TakabayashiAngle_Function( self.TakabayashiAngle_GPU,  
+						W11_GPU, W12_GPU, W13_GPU, W14_GPU,
+			    			W21_GPU, W22_GPU, W23_GPU, W24_GPU,
+			    			W31_GPU, W32_GPU, W33_GPU, W34_GPU,
+			    			W41_GPU, W42_GPU, W43_GPU, W44_GPU, block=self.blockCUDA, grid=self.gridCUDA)
 
 		#............................................................................
 
@@ -3714,6 +3771,7 @@ class GPU_WignerDirac2D_4x4:
 		self.transmission = np.array(transmission).real
 		f11['transmission'] = self.transmission
 
+		f11['TakabayashiAngle'] = self.TakabayashiAngle_GPU.get()
 		#.............................................................................
 
 		f11.close()
@@ -3738,14 +3796,13 @@ class GPU_WignerDirac2D_4x4:
 		W43 = W43_GPU.get()
 		W44 = W44_GPU.get()
 
-		W_end = np.array([ [W11,W12,W13,W14], [W21,W22,W23,W24], [W31,W32,W33,W34], [W41,W42,W43,W44] ])
+		self.W_end = np.array([ [W11,W12,W13,W14], [W21,W22,W23,W24], [W31,W32,W33,W34], [W41,W42,W43,W44] ])
 
 
 		self.plan_Z2Z_1D_Axes0.__del__()
 		self.plan_Z2Z_1D_Axes1.__del__()
 		self.plan_Z2Z_1D.__del__()		
-
-		self.W_end = W_end		
+		
 
 
 
