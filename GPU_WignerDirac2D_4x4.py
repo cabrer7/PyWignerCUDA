@@ -1209,15 +1209,14 @@ pycuda::complex<double>* W41,  pycuda::complex<double>* W42,  pycuda::complex<do
 {
 
    const int X_gridDIM = blockDim.x * gridDim.z;
-   //const int P_gridDIM = gridDim.x;
    const int indexTotal = threadIdx.x + blockIdx.z*blockDim.x + X_gridDIM * blockIdx.x   ;	
 
   double s = 2.*pycuda::imag<double>( W13[indexTotal] ) + 2.*pycuda::imag<double>( W24[indexTotal] );
 
-  double c =  pycuda::real<double>(W33[indexTotal]);
-         c += pycuda::real<double>(W44[indexTotal]);
-  	 c -= pycuda::real<double>(W11[indexTotal]);
-	 c -= pycuda::real<double>(W22[indexTotal]);
+  double c =  pycuda::real<double>(W11[indexTotal]);
+         c += pycuda::real<double>(W22[indexTotal]);
+  	 c -= pycuda::real<double>(W33[indexTotal]);
+	 c -= pycuda::real<double>(W44[indexTotal]);
 
   TakabayashiAngle[indexTotal] = atan2(s,c);
 
@@ -2310,13 +2309,11 @@ class GPU_WignerDirac2D_4x4:
 		return norm
 
 	def TakabayashiAngle_CPU(self,W):
-		WW = W.copy()
-		s = 2.*np.imag( WW[0,2] ) + 2.*np.imag( WW[1,3] );
-		c =  np.real( WW[2,2] );
-		c += np.real( WW[3,3] );
-		c -= np.real( WW[0,0] );
-		c -= np.real( WW[1,1] );
-		return np.arctan2(s,c);
+	        WW = W.copy()
+	        s = 2.*np.imag( WW[0,2] ) + 2.*np.imag( WW[1,3] );
+	        c =  np.real( WW[0,0] ) + np.real( WW[1,1] ) - np.real( WW[2,2] ) - np.real( WW[3,3] );
+	
+	        return  np.arctan2( s , np.abs(c) );
 
 	#...................................................................................
 
@@ -3403,6 +3400,15 @@ class GPU_WignerDirac2D_4x4:
 		aGPitaevskii_GPU = np.float64( self.grossPitaevskiiCoefficient )
 		gammaDamping_GPU = np.float64( self.gammaDamping )
 
+		#-------------------------------------------------------------------------
+		self.TakabayashiAngle_Function( self.TakabayashiAngle_GPU,  
+						W11_GPU, W12_GPU, W13_GPU, W14_GPU,
+			    			W21_GPU, W22_GPU, W23_GPU, W24_GPU,
+			    			W31_GPU, W32_GPU, W33_GPU, W34_GPU,
+			    			W41_GPU, W42_GPU, W43_GPU, W44_GPU, block=self.blockCUDA, grid=self.gridCUDA)
+
+		self.TakabayashiAngle_init = self.TakabayashiAngle_GPU.get()
+		#-------------------------------------------------------------------------	
 
 		for t_index in timeRangeIndex:
 				timeRange = np.append( timeRange ,  self.dt * t_index )
@@ -3585,6 +3591,12 @@ class GPU_WignerDirac2D_4x4:
 								    B_GP_minus_GPU, B_GP_plus_GPU, aGPitaevskii_GPU,
 								    block=self.blockCUDA, grid=self.gridCUDA )
 
+				#...........................................................................
+				#if t_index == timeRangeIndex[-1]:
+					
+
+
+		#............................................................................
 				
 				##########################################################
 				#
@@ -3702,19 +3714,20 @@ class GPU_WignerDirac2D_4x4:
 	
 				#.............................................................
 		
-		
-		final_time = time.time()
-		print ' computation time = ', final_time - initial_time, ' seconds'
-
-		#...........................................................................
-
+		#self.Fourier_Theta_To_P_GPU( self.TakabayashiAngle_GPU  )
 		self.TakabayashiAngle_Function( self.TakabayashiAngle_GPU,  
 						W11_GPU, W12_GPU, W13_GPU, W14_GPU,
 			    			W21_GPU, W22_GPU, W23_GPU, W24_GPU,
 			    			W31_GPU, W32_GPU, W33_GPU, W34_GPU,
 			    			W41_GPU, W42_GPU, W43_GPU, W44_GPU, block=self.blockCUDA, grid=self.gridCUDA)
 
-		#............................................................................
+		self.TakabayashiAngle_end = self.TakabayashiAngle_GPU.get()
+				
+
+		final_time = time.time()
+		print ' computation time = ', final_time - initial_time, ' seconds'
+
+
 
 		self.timeRange   = timeRange
 		f11['timeRange'] = timeRange		
@@ -3771,7 +3784,8 @@ class GPU_WignerDirac2D_4x4:
 		self.transmission = np.array(transmission).real
 		f11['transmission'] = self.transmission
 
-		f11['TakabayashiAngle'] = self.TakabayashiAngle_GPU.get()
+		f11['TakabayashiAngle_end']  = self.TakabayashiAngle_GPU.get()
+		f11['TakabayashiAngle_init'] = self.TakabayashiAngle_init
 		#.............................................................................
 
 		f11.close()
